@@ -227,10 +227,74 @@ def test_change_set_name_is_unique_per_attempt_and_valid() -> None:
 
 
 # --------------------------------------------------------------------------- deploy
+def scheduler_outputs(world: World) -> None:
+    world.outputs["stk-useast2-oecalc-eks-scheduler-dev"] = {"FunctionName": "fnc-useast2-oecalc-eks-nat-dev"}
+
+
+def test_deploy_invokes_up_after_the_scheduler_stack_and_says_so(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = World(cli)
+    scheduler_outputs(world)
+    world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
+    cli.on("ec2 describe-security-group-rules", {"SecurityGroupRules": []})
+    cli.on("ec2 create-tags", Reply())
+    cli.on("lambda invoke", Reply("None\n"))
+    assert deploy.main(["deploy", "--env", "dev"]) == 0
+    (invoke,) = cli.called("lambda invoke")
+    assert '"action":"up"' in invoke[invoke.index("--payload") + 1]
+    assert '"wait":true' in invoke[invoke.index("--payload") + 1]
+    created = cli.called("cloudformation create-change-set")
+    scheduler_index = next(i for i, c in enumerate(cli.calls) if c in created and "scheduler" in str(c))
+    assert cli.calls.index(invoke) > scheduler_index
+    out = capsys.readouterr().out
+    assert "the 22:00 schedule will still remove it" in out
+    assert "outside 08:00-22:00" in out
+
+
+def test_up_runs_again_when_the_scheduler_change_set_has_no_changes(repo: Path, cli: FakeCli) -> None:
+    world = World(
+        cli,
+        {f"stk-useast2-oecalc-eks-{u}-dev": "CREATE_COMPLETE" for u in ("security", "network", "scheduler", "bastion")},
+    )
+    scheduler_outputs(world)
+    world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
+    world.change_set = {"Status": "FAILED", "StatusReason": "The submitted information didn't contain changes."}
+    cli.on("ec2 describe-security-group-rules", {"SecurityGroupRules": []})
+    cli.on("ec2 create-tags", Reply())
+    cli.on("lambda invoke", Reply("None\n"))
+    assert deploy.main(["deploy", "--env", "dev"]) == 0
+    assert not cli.called("cloudformation execute-change-set")
+    assert deploy.main(["deploy", "--env", "dev"]) == 0  # twice: the function is idempotent, the script just repeats
+    assert len(cli.called("lambda invoke")) == 2
+
+
+def test_prod_deploy_does_not_invoke_the_scheduler(repo: Path, cli: FakeCli) -> None:
+    world = World(cli)
+    world.outputs["stk-useast2-oecalc-eks-network-prod"] = {"DefaultSecurityGroupId": "sg-0abc"}
+    cli.on("ec2 describe-security-group-rules", {"SecurityGroupRules": []})
+    cli.on("ec2 create-tags", Reply())
+    assert deploy.main(["deploy", "--env", "prod"]) == 0
+    assert not cli.called("lambda invoke")
+
+
+def test_a_failing_up_stops_the_deployment(repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]) -> None:
+    world = World(cli)
+    scheduler_outputs(world)
+    world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
+    cli.on("ec2 describe-security-group-rules", {"SecurityGroupRules": []})
+    cli.on("ec2 create-tags", Reply())
+    cli.on("lambda invoke", Reply("Unhandled\n"))
+    assert deploy.main(["deploy", "--env", "dev"]) == 1
+    assert "failed with action up" in capsys.readouterr().out
+
+
 def test_deploy_creates_stacks_in_order_and_skips_disabled_units(
     repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
 ) -> None:
     world = World(cli)
+    scheduler_outputs(world)
+    cli.on("lambda invoke", Reply("None\n"))
     world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
     cli.on(
         "ec2 describe-security-group-rules",
@@ -256,6 +320,8 @@ def test_deploy_creates_stacks_in_order_and_skips_disabled_units(
 
 def test_deploy_through_stops_after_the_named_unit(repo: Path, cli: FakeCli) -> None:
     world = World(cli)
+    scheduler_outputs(world)
+    cli.on("lambda invoke", Reply("None\n"))
     world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
     cli.on("ec2 describe-security-group-rules", {"SecurityGroupRules": []})
     cli.on("ec2 create-tags", Reply())
@@ -359,6 +425,8 @@ def test_deploy_stops_before_executing_a_remove_or_replacement(
 
 def test_deploy_runs_an_allowlisted_replacement(repo: Path, cli: FakeCli) -> None:
     world = World(cli)
+    scheduler_outputs(world)
+    cli.on("lambda invoke", Reply("None\n"))
     world.outputs["stk-useast2-oecalc-eks-network-dev"] = {"DefaultSecurityGroupId": "sg-0abc"}
     world.change_set = {"Status": "CREATE_COMPLETE", "Changes": [change("Modify", "AWS::SNS::Topic", "True")]}
     cli.on(

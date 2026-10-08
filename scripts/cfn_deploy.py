@@ -64,6 +64,10 @@ REPLACEMENT_ALLOWED_TYPES: frozenset[str] = frozenset()
 POLL_SECONDS = 15
 CHANGE_SET_POLL_SECONDS = 5
 STACK_TIMEOUT_SECONDS = 90 * 60
+NAT_NOTE = (
+    "After a deployment outside 08:00-22:00 (Panama time) the NAT gateway created by the deployment stays until "
+    "the 22:00 schedule or the next schedule runs."
+)
 SHARED_RESOURCES_LINE = (
     "Next step in shared-resources: run Deploy DEV there so Route 53 reads the API backend registry again "
     "(the load balancer DNS name changes whenever the environment is recreated)."
@@ -433,7 +437,7 @@ def summary_lines(env: str, outputs: dict[str, dict[str, str]]) -> list[str]:
     for stack, values in outputs.items():
         lines.append(f"- `{stack}`")
         lines.extend(f"  - {key}: {value}" for key, value in sorted(values.items()))
-    lines.extend(["", "What the owner does next:", f"- {SHARED_RESOURCES_LINE}"])
+    lines.extend(["", "What the owner does next:", f"- {SHARED_RESOURCES_LINE}", f"- {NAT_NOTE}"])
     return lines
 
 
@@ -449,6 +453,9 @@ def command_deploy(args: argparse.Namespace) -> int:
             continue
         deploy_stack(args.env, entry, run_id, attempt, allowed)
         outputs[entry["stack"]] = stack_outputs(entry["stack"])
+        if entry["unit"] == "scheduler" and args.env == "dev":
+            # Also after a change set without changes: without this, egress is missing until the next 08:00.
+            nat_up(entry["stack"])
     summary = summary_lines(args.env, outputs)
     print("\n".join(summary))
     write_step_summary(summary)
@@ -512,8 +519,8 @@ def empty_bucket(bucket: str) -> int:
         removed += len(objects)
 
 
-def nat_down(stack: str) -> None:
-    """Remove the NAT gateway and wait until it is deleted. Succeeds when there is no NAT gateway."""
+def invoke_nat_scheduler(stack: str, action: str) -> None:
+    """Invoke the scheduler function with action up or down and wait for it (both are idempotent)."""
     function = stack_outputs(stack)["FunctionName"]
     with tempfile.TemporaryDirectory() as scratch:
         response = Path(scratch) / "response.json"
@@ -525,7 +532,7 @@ def nat_down(stack: str) -> None:
                 "--function-name",
                 function,
                 "--payload",
-                '{"action":"down","wait":true}',
+                json.dumps({"action": action, "wait": True}, separators=(",", ":")),
                 "--cli-binary-format",
                 "raw-in-base64-out",
                 "--cli-read-timeout",
@@ -538,8 +545,19 @@ def nat_down(stack: str) -> None:
             ]
         )
     if completed.stdout.strip() != "None":
-        raise DeployError(f"the scheduler function failed when removing the NAT gateway ({completed.stdout.strip()})")
+        raise DeployError(f"the scheduler function failed with action {action} ({completed.stdout.strip()})")
+
+
+def nat_down(stack: str) -> None:
+    """Remove the NAT gateway and wait until it is deleted. Succeeds when there is no NAT gateway."""
+    invoke_nat_scheduler(stack, "down")
     print("NAT gateway removed or already absent (scheduler invoked with action down)")
+
+
+def nat_up(stack: str) -> None:
+    """Create the NAT gateway and the private default route now, so egress works right after a deployment."""
+    invoke_nat_scheduler(stack, "up")
+    print("NAT gateway exists and the private default route points to it; the 22:00 schedule will still remove it.")
 
 
 def stack_resources(stack: str) -> list[dict[str, Any]]:
