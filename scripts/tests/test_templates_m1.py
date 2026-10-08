@@ -75,10 +75,7 @@ def test_keys_rotate_and_are_enabled(security: dict[str, Any]) -> None:
 
 
 def test_aliases_follow_the_naming_convention(security: dict[str, Any]) -> None:
-    aliases = {
-        k: v["Properties"]["AliasName"]["Fn::Sub"]
-        for k, v in resources_of(security, "AWS::KMS::Alias").items()
-    }
+    aliases = {k: v["Properties"]["AliasName"]["Fn::Sub"] for k, v in resources_of(security, "AWS::KMS::Alias").items()}
     assert aliases == {
         "DataKeyAlias": "alias/kms-${RegionCode}-${Context}-eks-${EnvType}",
         "SecretsKeyAlias": "alias/kms-${RegionCode}-${Context}-eks-secrets-${EnvType}",
@@ -95,18 +92,14 @@ def test_key_policy_has_the_kms06_administration_statement(security: dict[str, A
         statements = {s["Sid"]: s for s in key["Properties"]["KeyPolicy"]["Statement"]}
         admin = statements["KeyAdministration"]
         assert required <= set(admin["Action"])
-        assert not any(
-            a.startswith(("kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey")) for a in admin["Action"]
-        )
+        assert not any(a.startswith(("kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey")) for a in admin["Action"])
         assert "role/${KeyAdminRoleName}" in admin["Principal"]["AWS"]["Fn::Sub"]
         assert statements["EnableIamPolicies"]["Principal"]["AWS"]["Fn::Sub"].endswith(":root")
 
 
 def documents(template: dict[str, Any]) -> list[dict[str, Any]]:
     docs = [k["Properties"]["KeyPolicy"] for k in resources_of(template, "AWS::KMS::Key").values()]
-    docs += [
-        t["Properties"]["PolicyDocument"] for t in resources_of(template, "AWS::SNS::TopicPolicy").values()
-    ]
+    docs += [t["Properties"]["PolicyDocument"] for t in resources_of(template, "AWS::SNS::TopicPolicy").values()]
     return docs
 
 
@@ -122,12 +115,8 @@ def test_no_wildcard_principal_without_conditions(security: dict[str, Any]) -> N
 def test_alerts_topic_is_encrypted_with_the_data_key_and_has_tls_deny(security: dict[str, Any]) -> None:
     topic = resources_of(security, "AWS::SNS::Topic")["AlertsTopic"]["Properties"]
     assert topic["KmsMasterKeyId"] == {"Ref": "DataKeyAlias"}
-    statements = resources_of(security, "AWS::SNS::TopicPolicy")["AlertsTopicPolicy"]["Properties"][
-        "PolicyDocument"
-    ]
-    assert any(
-        s["Effect"] == "Deny" and "aws:SecureTransport" in json.dumps(s) for s in statements["Statement"]
-    )
+    statements = resources_of(security, "AWS::SNS::TopicPolicy")["AlertsTopicPolicy"]["Properties"]["PolicyDocument"]
+    assert any(s["Effect"] == "Deny" and "aws:SecureTransport" in json.dumps(s) for s in statements["Statement"])
     subscription = resources_of(security, "AWS::SNS::Subscription")["AlertsEmailSubscription"]["Properties"]
     assert subscription["Protocol"] == "email"
     assert subscription["Endpoint"] == {"Ref": "SupportEmail"}
@@ -161,16 +150,12 @@ def ingress_rules(network: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     rules: list[tuple[str, dict[str, Any]]] = []
     for name, group in resources_of(network, "AWS::EC2::SecurityGroup").items():
         rules += [(name, r) for r in group["Properties"].get("SecurityGroupIngress", [])]
-    rules += [
-        (n, r["Properties"]) for n, r in resources_of(network, "AWS::EC2::SecurityGroupIngress").items()
-    ]
+    rules += [(n, r["Properties"]) for n, r in resources_of(network, "AWS::EC2::SecurityGroupIngress").items()]
     return rules
 
 
 def test_only_the_load_balancer_listens_to_the_internet(network: dict[str, Any]) -> None:
-    open_rules = [
-        (n, r) for n, r in ingress_rules(network) if r.get("CidrIp") == "0.0.0.0/0" or "CidrIpv6" in r
-    ]
+    open_rules = [(n, r) for n, r in ingress_rules(network) if r.get("CidrIp") == "0.0.0.0/0" or "CidrIpv6" in r]
     assert {(n, r["FromPort"], r["ToPort"]) for n, r in open_rules} == {
         ("AlbSecurityGroup", 443, 443),
         ("AlbSecurityGroup", 80, 80),
@@ -188,9 +173,7 @@ def test_no_ssh_or_wide_ingress(network: dict[str, Any]) -> None:
 
 def test_every_rule_has_a_description(network: dict[str, Any]) -> None:
     for name, group in resources_of(network, "AWS::EC2::SecurityGroup").items():
-        for rule in (
-            group["Properties"].get("SecurityGroupIngress", []) + group["Properties"]["SecurityGroupEgress"]
-        ):
+        for rule in group["Properties"].get("SecurityGroupIngress", []) + group["Properties"]["SecurityGroupEgress"]:
             assert rule["Description"], name
     for kind in ("AWS::EC2::SecurityGroupIngress", "AWS::EC2::SecurityGroupEgress"):
         for name, rule in resources_of(network, kind).items():
@@ -198,9 +181,7 @@ def test_every_rule_has_a_description(network: dict[str, Any]) -> None:
 
 
 def test_alb_can_reach_the_token_issuer_keys(network: dict[str, Any]) -> None:
-    egress = resources_of(network, "AWS::EC2::SecurityGroup")["AlbSecurityGroup"]["Properties"][
-        "SecurityGroupEgress"
-    ]
+    egress = resources_of(network, "AWS::EC2::SecurityGroup")["AlbSecurityGroup"]["Properties"]["SecurityGroupEgress"]
     assert any(r["FromPort"] == 443 and r["CidrIp"] == "0.0.0.0/0" for r in egress)
 
 
@@ -227,8 +208,7 @@ def test_subnets_are_tagged_for_load_balancer_discovery_and_not_public(network: 
         tags = {t["Key"] if isinstance(t["Key"], str) else "cluster": t["Value"] for t in props["Tags"]}
         assert tags[role_tag] == "1"
         assert any(
-            isinstance(t["Key"], dict) and "kubernetes.io/cluster/eksc-" in t["Key"]["Fn::Sub"]
-            for t in props["Tags"]
+            isinstance(t["Key"], dict) and "kubernetes.io/cluster/eksc-" in t["Key"]["Fn::Sub"] for t in props["Tags"]
         )
         assert props["MapPublicIpOnLaunch"] is False
         assert "Fn::Cidr" in props["CidrBlock"]["Fn::Select"][1]
@@ -236,10 +216,7 @@ def test_subnets_are_tagged_for_load_balancer_discovery_and_not_public(network: 
 
 def test_private_default_route_only_exists_under_the_prod_condition(network: dict[str, Any]) -> None:
     for name, route in resources_of(network, "AWS::EC2::Route").items():
-        if (
-            route["Properties"].get("DestinationCidrBlock") == "0.0.0.0/0"
-            and "NatGatewayId" in route["Properties"]
-        ):
+        if route["Properties"].get("DestinationCidrBlock") == "0.0.0.0/0" and "NatGatewayId" in route["Properties"]:
             assert route.get("Condition") == "NatPerAz", name
     for kind in ("AWS::EC2::NatGateway", "AWS::EC2::EIP"):
         for name, res in resources_of(network, kind).items():
@@ -296,14 +273,11 @@ def test_lifecycle_keeps_the_last_ten_images(registry: dict[str, Any]) -> None:
 
 
 def test_repository_policy_is_pull_only_for_two_roles(registry: dict[str, Any]) -> None:
-    policy = resources_of(registry, "AWS::ECR::Repository")["Repository"]["Properties"][
-        "RepositoryPolicyText"
-    ]
+    policy = resources_of(registry, "AWS::ECR::Repository")["Repository"]["Properties"]["RepositoryPolicyText"]
     (statement,) = policy["Statement"]
     assert statement["Effect"] == "Allow" and statement["Principal"] != "*"
     assert all(
-        a.startswith("ecr:") and not a.startswith(("ecr:Put", "ecr:Init", "ecr:Upload"))
-        for a in statement["Action"]
+        a.startswith("ecr:") and not a.startswith(("ecr:Put", "ecr:Init", "ecr:Upload")) for a in statement["Action"]
     )
     roles = [r["Fn::Sub"] for r in as_list(statement["Condition"]["ArnEquals"]["aws:PrincipalArn"])]
     assert len(roles) == 2

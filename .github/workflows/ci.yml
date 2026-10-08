@@ -73,16 +73,10 @@ jobs:
 
       - name: Ruff and mypy on the scheduler and the deployment scripts
         run: |
-          ruff check --config src/scheduler/pyproject.toml src/scheduler scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/tests/test_cfn_deploy.py scripts/tests/test_owner_guard.py scripts/tests/test_post_destroy.py scripts/tests/conftest.py scripts/tests/test_workflows.py
-          ruff format --config src/scheduler/pyproject.toml --check src/scheduler scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/tests/test_cfn_deploy.py scripts/tests/test_owner_guard.py scripts/tests/test_post_destroy.py scripts/tests/conftest.py scripts/tests/test_workflows.py
-          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py
+          ruff check --config src/scheduler/pyproject.toml src/scheduler scripts
+          ruff format --config src/scheduler/pyproject.toml --check src/scheduler scripts
+          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/package_rotation.py
           (cd src/scheduler && mypy app.py)
-
-      - name: Ruff (lint and format) on the IaC tests
-        run: |
-          files="scripts/tests/test_parameters.py scripts/tests/test_cidr_plan.py scripts/tests/test_templates_m1.py"
-          ruff check --isolated --line-length 120 --select E,F,I,B,S,UP --ignore S101 $files
-          ruff format --isolated --line-length 120 --check $files
 
   # PLACEHOLDER (task 4.1): Python core job (ruff, ruff format --check, mypy strict, lint-imports, pytest with
   # coverage at least 85 percent, pip-audit) for src/backend/calculator_core and the Lambda packages.

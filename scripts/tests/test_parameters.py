@@ -12,9 +12,7 @@ MANDATORY_TAGS = {"team-owner", "project-name", "app-name", "repo-name", "env-ty
 
 
 def load(env: str) -> dict[str, dict[str, str]]:
-    data: dict[str, dict[str, str]] = json.loads(
-        (REPO / "parameters" / f"{env}.json").read_text(encoding="utf-8")
-    )
+    data: dict[str, dict[str, str]] = json.loads((REPO / "parameters" / f"{env}.json").read_text(encoding="utf-8"))
     return data
 
 
