@@ -1,0 +1,122 @@
+name: Deploy
+
+# Reusable deployment (infrastructure-only subset of task 4.8). Only dev works for now; prod is refused.
+# Deploys the stacks of templates/stacks.json up to and including `rotation` with change sets guarded
+# against removals and replacements (scripts/cfn_deploy.py). The stacks after `rotation` (storage, cluster,
+# deploy, bastion, alarms) and the application are added by the rest of task 4.8.
+#
+# SAM build: the runner has Python 3.14 (setup-python), the runtime of both functions, so `sam build` builds
+# natively and no container is used (same approach as the ecs repository).
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: "Target environment (dev only for now)"
+        type: string
+        required: true
+    secrets:
+      ROLE_ARN:
+        required: true
+      AWS_ACCOUNT_ID:
+        required: true
+      SUPPORT_EMAIL:
+        required: true
+
+permissions:
+  id-token: write # Required for requesting the JWT for AWS OIDC
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.14"
+  CFN_LINT_VERSION: "1.48.1"
+  SAM_CLI_VERSION: "1.158.0"
+  LAST_UNIT: rotation # last stack of this subset (see templates/stacks.json)
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    timeout-minutes: 120
+    steps:
+      - name: Refuse anything but dev
+        env:
+          TARGET: ${{ inputs.environment }}
+        run: |
+          if [ "$TARGET" != "dev" ]; then
+            echo "::error::Environment '$TARGET' is not supported yet: this workflow deploys dev only (prod is added by task 4.8)"
+            exit 1
+          fi
+
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Validate environment configuration
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ROLE_ARN_SET: ${{ secrets.ROLE_ARN != '' }}
+          AWS_ACCOUNT_ID_SET: ${{ secrets.AWS_ACCOUNT_ID != '' }}
+          SUPPORT_EMAIL_SET: ${{ secrets.SUPPORT_EMAIL != '' }}
+        run: |
+          missing=0
+          [ -n "$AWS_REGION" ] || { echo "::error::Variable 'AWS_REGION' is not set in the 'dev' GitHub environment"; missing=1; }
+          for secret in ROLE_ARN AWS_ACCOUNT_ID SUPPORT_EMAIL; do
+            flag="${secret}_SET"
+            [ "${!flag}" = "true" ] || { echo "::error::Secret '$secret' is not set in the 'dev' GitHub environment"; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: scripts/requirements-dev.txt
+
+      - name: Install tooling (pinned)
+        run: |
+          python -m pip install --disable-pip-version-check -r scripts/requirements-dev.txt
+          python -m pip install --disable-pip-version-check "cfn-lint==${CFN_LINT_VERSION}" "aws-sam-cli==${SAM_CLI_VERSION}"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ secrets.ROLE_ARN }}
+          role-session-name: gha-deploy-${{ inputs.environment }}-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Verify target AWS account
+        env:
+          EXPECTED_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACTUAL_ACCOUNT"
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::The credentials do not point to the AWS account configured for the dev GitHub environment"
+            exit 1
+          fi
+
+      # Fails closed: exit 2 (owned by Terraform), 3 (both) and 4 (unreadable) stop the deployment.
+      - name: Owner guard (CloudFormation only)
+        run: python scripts/iac_owner_guard.py check --tool cloudformation --env dev
+
+      - name: Package the rotation function
+        run: python scripts/package_rotation.py
+
+      # Change sets: Remove actions and replacements stop the run before the change set is executed.
+      - name: Deploy the base stacks (security through rotation)
+        env:
+          CFN_PARAM_SupportEmail: ${{ secrets.SUPPORT_EMAIL }}
+        run: python scripts/cfn_deploy.py deploy --env dev --through "$LAST_UNIT"
+
+      - name: Deployment summary
+        if: ${{ success() }}
+        run: |
+          {
+            echo ""
+            echo "### What the owner does next"
+            echo "- Confirm the e-mail subscription of the alerts topic (SNS sends a confirmation message to the SUPPORT_EMAIL address)."
+            echo "- Review the stacks and their tags in the console, then run Destroy DEV in plan mode when finished."
+            echo "- Stacks after \`rotation\` (storage, cluster, deploy, bastion, alarms) and the application are not deployed by this subset."
+          } >> "$GITHUB_STEP_SUMMARY"

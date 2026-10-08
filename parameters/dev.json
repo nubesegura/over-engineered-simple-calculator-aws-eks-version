@@ -1,0 +1,41 @@
+{
+  "Parameters": {
+    "EnvType": "dev",
+    "Context": "oecalc",
+    "RegionCode": "useast2",
+    "VpcCidr": "10.30.0.0/16",
+    "EnableFlowLogs": "false",
+    "NatGatewayPerAz": "false",
+    "KeyAdminRoleName": "github-actions-terraform-dev-role",
+    "KmsDeletionWindowDays": "7",
+    "NatSchedulerEnabled": "true",
+    "NatOffSchedule": "cron(0 22 * * ? *)",
+    "NatOnSchedule": "cron(0 8 * * ? *)",
+    "NatTimeZone": "America/Panama",
+    "EnableBastion": "true",
+    "DbMultiAz": "false",
+    "DbBackupRetentionDays": "1",
+    "DbDeletionProtection": "false",
+    "EnableDbLogExports": "false",
+    "RotationWindowStartHourUtc": "14",
+    "RotationWindowDuration": "8h",
+    "LogRetentionDays": "14",
+    "AlbLogRetentionDays": "30",
+    "ElbLogDeliveryAccountId": "033677994240",
+    "ForceDestroyData": "true",
+    "ImagesToKeep": "10",
+    "KubernetesVersion": "1.37",
+    "ServiceIpv4Cidr": "172.20.0.0/16",
+    "NodeMinSize": "2",
+    "NodeDesiredSize": "2",
+    "NodeMaxSize": "4",
+    "WafAclArn": ""
+  },
+  "Tags": {
+    "team-owner": "nube-segura",
+    "project-name": "over-engineered-calculator",
+    "app-name": "calc-api",
+    "repo-name": "over-engineered-simple-calculator-aws-eks-version",
+    "env-type": "dev"
+  }
+}

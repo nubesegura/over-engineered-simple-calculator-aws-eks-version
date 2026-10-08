@@ -1,0 +1,266 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Security stack: two customer managed KMS keys with their aliases (data key and cluster secrets key) and
+  the encrypted alerts SNS topic with its policy and email subscription.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+    Description: Environment tier; always the last segment of every resource name
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+    Description: Functional context shared by every resource of the project (naming convention segment)
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+    Description: Region without hyphens (naming convention segment), for example useast2
+  KmsDeletionWindowDays:
+    Type: Number
+    MinValue: 7
+    MaxValue: 30
+    Description: Waiting period before a scheduled deletion of a key takes effect (30 in prod, KMS-02)
+  KeyAdminRoleName:
+    Type: String
+    MinLength: 1
+    Description: Name (not ARN) of the existing IAM role that administers the keys (KMS-06); it gets no data-plane action
+  SupportEmail:
+    Type: String
+    NoEcho: true
+    MinLength: 3
+    Description: Address that receives the alerts (GitHub secret SUPPORT_EMAIL; the owner confirms the subscription by hand)
+
+Resources:
+  # ---------------------------------------------------------
+  # Data key: RDS, S3, SQS, SNS, ECR, Secrets Manager, logs, node volumes
+  # ---------------------------------------------------------
+  DataKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "Data key of ${Context} eks (${EnvType}): RDS, S3, SQS, SNS, ECR, secrets, logs, volumes"
+      Enabled: true # KMS-05
+      EnableKeyRotation: true # KMS-01
+      PendingWindowInDays: !Ref KmsDeletionWindowDays # KMS-02
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          # Lets IAM policies work. What each role may do (by alias, with kms:ViaService) is decided in the
+          # IAM policies of the stacks that use the key; alias management is never granted there.
+          - Sid: EnableIamPolicies
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          # KMS-06: administration without data-plane actions (Encrypt, Decrypt, GenerateDataKey*).
+          - Sid: KeyAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${KeyAdminRoleName}"
+            Action:
+              - kms:Describe*
+              - kms:PutKeyPolicy
+              - kms:Create*
+              - kms:Update*
+              - kms:Enable*
+              - kms:RevokeGrant
+              - kms:List*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:RetireGrant
+            Resource: "*"
+          - Sid: CloudWatchLogs
+            Effect: Allow
+            Principal:
+              Service: !Sub "logs.${AWS::Region}.amazonaws.com"
+            Action:
+              - kms:Encrypt*
+              - kms:Decrypt*
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:Describe*
+            Resource: "*"
+            Condition:
+              ArnLike:
+                kms:EncryptionContext:aws:logs:arn: !Sub "arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:*"
+          # CloudWatch alarms and EventBridge rules publish to the encrypted alerts topic.
+          - Sid: AlarmAndRulePublishers
+            Effect: Allow
+            Principal:
+              Service:
+                - events.amazonaws.com
+                - cloudwatch.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+          # S3 sends the ingestion events to the encrypted queue (bucket name fixed by the storage stack).
+          - Sid: IngestBucketEventsToQueue
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey*
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:s3:::bckt-${RegionCode}-${Context}-eks-ingest-${AWS::AccountId}-${EnvType}"
+      Tags:
+        - Key: Name
+          Value: !Sub "kms-${RegionCode}-${Context}-eks-${EnvType}"
+
+  DataKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/kms-${RegionCode}-${Context}-eks-${EnvType}"
+      TargetKeyId: !Ref DataKey
+
+  # ---------------------------------------------------------
+  # Secrets key: envelope encryption of the Kubernetes secrets of the cluster
+  # ---------------------------------------------------------
+  SecretsKey:
+    Type: AWS::KMS::Key
+    Properties:
+      Description: !Sub "Cluster secrets key of ${Context} eks (${EnvType}): envelope encryption of Kubernetes secrets"
+      Enabled: true # KMS-05
+      EnableKeyRotation: true # KMS-01
+      PendingWindowInDays: !Ref KmsDeletionWindowDays # KMS-02
+      KeyPolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: EnableIamPolicies
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action: kms:*
+            Resource: "*"
+          - Sid: KeyAdministration
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/${KeyAdminRoleName}"
+            Action:
+              - kms:Describe*
+              - kms:PutKeyPolicy
+              - kms:Create*
+              - kms:Update*
+              - kms:Enable*
+              - kms:RevokeGrant
+              - kms:List*
+              - kms:Disable*
+              - kms:Get*
+              - kms:Delete*
+              - kms:ScheduleKeyDeletion
+              - kms:CancelKeyDeletion
+              - kms:TagResource
+              - kms:UntagResource
+              - kms:RetireGrant
+            Resource: "*"
+      Tags:
+        - Key: Name
+          Value: !Sub "kms-${RegionCode}-${Context}-eks-secrets-${EnvType}"
+
+  SecretsKeyAlias:
+    Type: AWS::KMS::Alias
+    Properties:
+      AliasName: !Sub "alias/kms-${RegionCode}-${Context}-eks-secrets-${EnvType}"
+      TargetKeyId: !Ref SecretsKey
+
+  # ---------------------------------------------------------
+  # SNS topic for alerts and alarms (encrypted with the data key, referenced by alias)
+  # ---------------------------------------------------------
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: !Sub "sns-${RegionCode}-${Context}-eks-alerts-${EnvType}"
+      KmsMasterKeyId: !Ref DataKeyAlias # SNS-01
+
+  AlertsTopicPolicy:
+    Type: AWS::SNS::TopicPolicy
+    Properties:
+      Topics:
+        - !Ref AlertsTopic
+      PolicyDocument:
+        Version: "2012-10-17"
+        Id: AlertsTopicPolicy
+        Statement:
+          - Sid: AllowCloudWatchAlarms
+            Effect: Allow
+            Principal:
+              Service: cloudwatch.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:*"
+          - Sid: AllowEventBridgeRules
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sns:Publish
+            Resource: !Ref AlertsTopic
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+              ArnLike:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/*"
+          - Sid: DenyInsecureTransport # SNS-03
+            Effect: Deny
+            Principal:
+              AWS: "*"
+            Action:
+              - sns:Publish
+              - sns:Subscribe
+            Resource: !Ref AlertsTopic
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # The owner confirms the subscription from the email the first time.
+  AlertsEmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref AlertsTopic
+      Protocol: email # SNS-04
+      Endpoint: !Ref SupportEmail
+
+Outputs:
+  DataKeyAlias:
+    Description: Alias of the data key (IAM policies use it with kms:ResourceAliases and kms:ViaService)
+    Value: !Ref DataKeyAlias
+    Export:
+      Name: !Sub "${AWS::StackName}:DataKeyAlias"
+  SecretsKeyAlias:
+    Description: Alias of the cluster secrets key
+    Value: !Ref SecretsKeyAlias
+    Export:
+      Name: !Sub "${AWS::StackName}:SecretsKeyAlias"
+  DataKeyArn:
+    Description: ARN of the data key, only for services that accept nothing but an ARN (log groups, flow logs)
+    Value: !GetAtt DataKey.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:DataKeyArn"
+  SecretsKeyArn:
+    Description: ARN of the cluster secrets key, only for the cluster encryption configuration
+    Value: !GetAtt SecretsKey.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:SecretsKeyArn"
+  AlertsTopicArn:
+    Description: ARN of the alerts SNS topic
+    Value: !Ref AlertsTopic
+    Export:
+      Name: !Sub "${AWS::StackName}:AlertsTopicArn"

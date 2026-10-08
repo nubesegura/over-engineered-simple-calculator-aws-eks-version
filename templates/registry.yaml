@@ -1,0 +1,83 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Registry stack: the single ECR repository of the project (one image, one command per workload) with scan
+  on push, immutable tags, a lifecycle policy, encryption with the data key and a repository policy that
+  lets only the node role and the deployment build pull images.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  ForceDestroyData:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Delete the repository even when it still holds images on destroy (dev only)
+  ImagesToKeep:
+    Type: Number
+    Default: 10
+    Description: Number of images kept by the lifecycle policy
+
+Conditions:
+  EmptyOnDelete: !Equals [!Ref ForceDestroyData, "true"]
+
+Resources:
+  Repository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Sub "ecr-${RegionCode}-${Context}-eks-${EnvType}"
+      ImageTagMutability: IMMUTABLE # ECR-02
+      EmptyOnDelete: !If [EmptyOnDelete, true, false]
+      ImageScanningConfiguration:
+        ScanOnPush: true # ECR-01
+      EncryptionConfiguration: # ECR-04, data key by alias (a replaced key keeps the alias)
+        EncryptionType: KMS
+        KmsKey:
+          Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      # Keep the newest images only (ECR-03).
+      LifecyclePolicy:
+        LifecyclePolicyText: !Sub '{"rules":[{"rulePriority":1,"description":"Keep the last ${ImagesToKeep} images","selection":{"tagStatus":"any","countType":"imageCountMoreThan","countNumber":${ImagesToKeep}},"action":{"type":"expire"}}]}'
+      # Pull only. The roles are created by the cluster and deploy stacks (later in the order), so they are
+      # named in a condition on the caller instead of as principals, which ECR would reject while they do
+      # not exist yet. Pushes come from the pipeline role through its own IAM policy, not from this policy.
+      RepositoryPolicyText:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PullByNodesAndDeploymentBuildOnly
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:root"
+            Action:
+              - ecr:BatchCheckLayerAvailability
+              - ecr:BatchGetImage
+              - ecr:GetDownloadUrlForLayer
+            Condition:
+              ArnEquals:
+                aws:PrincipalArn:
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/iamr-${RegionCode}-${Context}-eks-node-${EnvType}"
+                  - !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/iamr-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      Tags:
+        - Key: Name
+          Value: !Sub "ecr-${RegionCode}-${Context}-eks-${EnvType}"
+
+Outputs:
+  RepositoryName:
+    Value: !Ref Repository
+    Export:
+      Name: !Sub "${AWS::StackName}:RepositoryName"
+  RepositoryUri:
+    Description: Repository URL of the image
+    Value: !GetAtt Repository.RepositoryUri
+    Export:
+      Name: !Sub "${AWS::StackName}:RepositoryUri"
+  RepositoryArn:
+    Description: Repository ARN of the image
+    Value: !GetAtt Repository.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:RepositoryArn"

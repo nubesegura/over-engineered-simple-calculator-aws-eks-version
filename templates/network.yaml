@@ -1,0 +1,674 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Network stack: VPC, two public and two private subnets in two Availability Zones tagged for Kubernetes
+  load balancer discovery, route tables, S3 gateway endpoint, NAT Elastic IP, the security groups with
+  their rules and, in prod, one NAT gateway per Availability Zone and the VPC flow log. In dev the NAT
+  gateway and the private default route are created by the scheduler stack, not here.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  VpcCidr:
+    Type: String
+    AllowedPattern: "^(\\d{1,3}\\.){3}\\d{1,3}/16$"
+    Description: CIDR block of the VPC (a /16; subnets are /24 slices of it; plan in docs/architecture.md D23)
+  EnableFlowLogs:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Create the VPC flow log with its role and log group (prod only, VPC-01)
+  NatGatewayPerAz:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: "true (prod) creates one NAT gateway per Availability Zone and the private default routes here; false (dev) leaves them to the scheduler"
+  LogRetentionDays:
+    Type: Number
+    Description: Retention of the flow log group in days
+  PodPort:
+    Type: Number
+    Default: 8443
+    Description: Port where the pods serve HTTPS (load balancer to pods)
+  DatabasePort:
+    Type: Number
+    Default: 5432
+    Description: PostgreSQL port
+
+Conditions:
+  CreateFlowLogs: !Equals [!Ref EnableFlowLogs, "true"]
+  NatPerAz: !Equals [!Ref NatGatewayPerAz, "true"]
+
+Resources:
+  # ---------------------------------------------------------
+  # VPC, subnets, internet gateway
+  # ---------------------------------------------------------
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true # VPC-07
+      EnableDnsHostnames: true # VPC-08
+      Tags:
+        - Key: Name
+          Value: !Sub "vpc-${RegionCode}-${Context}-eks-${EnvType}"
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 13, 8]]
+      MapPublicIpOnLaunch: false # VPC-03
+      Tags:
+        - Key: Name
+          Value: !Sub "snet-${RegionCode}-${Context}-eks-public-a-${EnvType}"
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: !Sub "kubernetes.io/cluster/eksc-${RegionCode}-${Context}-${EnvType}"
+          Value: shared
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 13, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "snet-${RegionCode}-${Context}-eks-public-b-${EnvType}"
+        - Key: kubernetes.io/role/elb
+          Value: "1"
+        - Key: !Sub "kubernetes.io/cluster/eksc-${RegionCode}-${Context}-${EnvType}"
+          Value: shared
+
+  PrivateSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      CidrBlock: !Select [11, !Cidr [!Ref VpcCidr, 13, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "snet-${RegionCode}-${Context}-eks-private-a-${EnvType}"
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: !Sub "kubernetes.io/cluster/eksc-${RegionCode}-${Context}-${EnvType}"
+          Value: shared
+
+  PrivateSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      AvailabilityZone: !Select [1, !GetAZs ""]
+      CidrBlock: !Select [12, !Cidr [!Ref VpcCidr, 13, 8]]
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub "snet-${RegionCode}-${Context}-eks-private-b-${EnvType}"
+        - Key: kubernetes.io/role/internal-elb
+          Value: "1"
+        - Key: !Sub "kubernetes.io/cluster/eksc-${RegionCode}-${Context}-${EnvType}"
+          Value: shared
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub "igw-${RegionCode}-${Context}-eks-${EnvType}"
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  # ---------------------------------------------------------
+  # Route tables
+  # ---------------------------------------------------------
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "rtb-${RegionCode}-${Context}-eks-public-${EnvType}"
+
+  PublicInternetRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  # Private table of the zone a (and of both zones in dev). In dev it has NO default route here: the NAT
+  # scheduler creates and deletes it together with the NAT gateway.
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "rtb-${RegionCode}-${Context}-eks-private-${EnvType}"
+
+  # Prod only: a second private table so that each zone uses the NAT gateway of its own zone.
+  PrivateRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Condition: NatPerAz
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "rtb-${RegionCode}-${Context}-eks-private-b-${EnvType}"
+
+  PrivateSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetA
+      RouteTableId: !Ref PrivateRouteTable
+
+  PrivateSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateSubnetB
+      RouteTableId: !If [NatPerAz, !Ref PrivateRouteTableB, !Ref PrivateRouteTable]
+
+  # Free gateway endpoint: S3 traffic (image layers, ingestion) does not use the NAT.
+  S3Endpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      VpcId: !Ref Vpc
+      ServiceName: !Sub "com.amazonaws.${AWS::Region}.s3"
+      VpcEndpointType: Gateway
+      RouteTableIds:
+        - !Ref PrivateRouteTable
+        - !If [NatPerAz, !Ref PrivateRouteTableB, !Ref "AWS::NoValue"]
+      Tags:
+        - Key: Name
+          Value: !Sub "vpce-${RegionCode}-${Context}-eks-s3-${EnvType}"
+
+  # ---------------------------------------------------------
+  # Elastic IPs and, in prod, the NAT gateways and the private default routes
+  # ---------------------------------------------------------
+  # Fixed address of the NAT gateway (zone a); in dev the scheduler attaches it each morning.
+  NatEip:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "eip-${RegionCode}-${Context}-eks-nat-${EnvType}"
+
+  NatEipB:
+    Type: AWS::EC2::EIP
+    Condition: NatPerAz
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub "eip-${RegionCode}-${Context}-eks-nat-b-${EnvType}"
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Condition: NatPerAz
+    Properties:
+      AllocationId: !GetAtt NatEip.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: !Sub "nat-${RegionCode}-${Context}-eks-a-${EnvType}"
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Condition: NatPerAz
+    Properties:
+      AllocationId: !GetAtt NatEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: !Sub "nat-${RegionCode}-${Context}-eks-b-${EnvType}"
+
+  PrivateDefaultRouteA:
+    Type: AWS::EC2::Route
+    Condition: NatPerAz
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateDefaultRouteB:
+    Type: AWS::EC2::Route
+    Condition: NatPerAz
+    Properties:
+      RouteTableId: !Ref PrivateRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  # ---------------------------------------------------------
+  # Security groups (design review 3.8). Rules that reference another group are separate resources to
+  # avoid circular dependencies. A group whose only rules are references carries one embedded egress
+  # rule so that EC2 does not add its default allow-all egress: 443 where the group needs it, otherwise the
+  # documented loopback placeholder (127.0.0.1/32), which allows no traffic out of the group.
+  # The group descriptions below are a replacement-forcing property: do not edit them after creation
+  # (scripts/tests/test_templates_m1.py freezes them).
+  # ---------------------------------------------------------
+  AlbSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-alb-${EnvType}"
+      GroupDescription: "Load balancer: HTTPS and HTTP from the internet, egress to the pods and to the token issuer keys"
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: HTTPS from the internet to the load balancer
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+        - Description: HTTP from the internet to the load balancer (only redirects to HTTPS)
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+      SecurityGroupEgress:
+        - Description: Load balancer to the token issuer public keys (JWKS) over HTTPS
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-alb-${EnvType}"
+
+  NodeSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-node-${EnvType}"
+      GroupDescription: "Nodes and pods: pod port from the load balancer, egress 443, DNS and the database path"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: HTTPS egress (ECR, logs, secrets, SNS, STS, cluster endpoint through the NAT; S3 through the endpoint)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-node-${EnvType}"
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-db-${EnvType}"
+      GroupDescription: "PostgreSQL: database port only from the proxy, the nodes and the rotation function"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: Placeholder that removes the default egress rule (loopback only, no traffic)
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-db-${EnvType}"
+
+  ProxySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-proxy-${EnvType}"
+      GroupDescription: "RDS Proxy: database port from the nodes, egress to the database only"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: Placeholder that removes the default egress rule (loopback only, no traffic)
+          IpProtocol: "-1"
+          CidrIp: 127.0.0.1/32
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-proxy-${EnvType}"
+
+  CodeBuildSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-codebuild-${EnvType}"
+      GroupDescription: "Deployment build: no ingress, egress 443 (cluster endpoint, ECR, SSM, S3 through the NAT)"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: HTTPS egress (cluster endpoint, ECR, SSM, STS through the NAT; S3 through the endpoint)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-codebuild-${EnvType}"
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      GroupDescription: "Bastion: no ingress (Session Manager only), egress 443"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: HTTPS egress (Session Manager, cluster endpoint, package downloads through the NAT)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+
+  RotationSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub "sgp-${RegionCode}-${Context}-eks-rotation-${EnvType}"
+      GroupDescription: "Rotation function: no ingress, egress 443 and the database"
+      VpcId: !Ref Vpc
+      SecurityGroupEgress:
+        - Description: HTTPS egress (Secrets Manager through the NAT)
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub "sgp-${RegionCode}-${Context}-eks-rotation-${EnvType}"
+
+  # Load balancer <-> pods
+  AlbToNodeEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref AlbSecurityGroup
+      Description: Load balancer to the pods on the pod port
+      IpProtocol: tcp
+      FromPort: !Ref PodPort
+      ToPort: !Ref PodPort
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+
+  NodeFromAlbIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: Pod port from the load balancer
+      IpProtocol: tcp
+      FromPort: !Ref PodPort
+      ToPort: !Ref PodPort
+      SourceSecurityGroupId: !Ref AlbSecurityGroup
+
+  # DNS between nodes (CoreDNS may run on the other node)
+  NodeDnsUdpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: DNS over UDP between nodes
+      IpProtocol: udp
+      FromPort: 53
+      ToPort: 53
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+
+  NodeDnsTcpIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: DNS over TCP between nodes
+      IpProtocol: tcp
+      FromPort: 53
+      ToPort: 53
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+
+  NodeDnsUdpEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: DNS over UDP between nodes
+      IpProtocol: udp
+      FromPort: 53
+      ToPort: 53
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+
+  NodeDnsTcpEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: DNS over TCP between nodes
+      IpProtocol: tcp
+      FromPort: 53
+      ToPort: 53
+      DestinationSecurityGroupId: !Ref NodeSecurityGroup
+
+  # Nodes -> proxy and nodes -> database (the migration job connects to the instance directly)
+  NodeToProxyEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: Pods to the database proxy
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref ProxySecurityGroup
+
+  ProxyFromNodeIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ProxySecurityGroup
+      Description: PostgreSQL from the nodes
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+
+  NodeToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref NodeSecurityGroup
+      Description: Migration job to the database instance
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+
+  DatabaseFromNodeIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL from the nodes (migration job)
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref NodeSecurityGroup
+
+  # Proxy -> database
+  ProxyToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref ProxySecurityGroup
+      Description: Proxy to the database
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+
+  DatabaseFromProxyIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL from the proxy
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref ProxySecurityGroup
+
+  # Rotation function -> database
+  RotationToDatabaseEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref RotationSecurityGroup
+      Description: Rotation function to the database
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+
+  DatabaseFromRotationIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      Description: PostgreSQL from the rotation function
+      IpProtocol: tcp
+      FromPort: !Ref DatabasePort
+      ToPort: !Ref DatabasePort
+      SourceSecurityGroupId: !Ref RotationSecurityGroup
+
+  # ---------------------------------------------------------
+  # VPC flow logs (prod only, VPC-01)
+  # ---------------------------------------------------------
+  FlowLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: CreateFlowLogs
+    Properties:
+      LogGroupName: !Sub "/${Context}/${EnvType}/eks/vpc-flow"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  FlowLogRole:
+    Type: AWS::IAM::Role
+    Condition: CreateFlowLogs
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-flowlog-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: vpc-flow-logs.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  FlowLogRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Condition: CreateFlowLogs
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-flowlog-${EnvType}"
+      RoleName: !Ref FlowLogRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+              - logs:DescribeLogStreams
+            Resource:
+              - !GetAtt FlowLogGroup.Arn
+              - !Sub "${FlowLogGroup.Arn}:*"
+
+  FlowLog:
+    Type: AWS::EC2::FlowLog
+    Condition: CreateFlowLogs
+    Properties:
+      ResourceId: !Ref Vpc
+      ResourceType: VPC
+      TrafficType: ALL
+      LogDestinationType: cloud-watch-logs
+      LogDestination: !GetAtt FlowLogGroup.Arn
+      DeliverLogsPermissionArn: !GetAtt FlowLogRole.Arn
+      Tags:
+        - Key: Name
+          Value: !Sub "flog-${RegionCode}-${Context}-eks-${EnvType}"
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub "${AWS::StackName}:VpcId"
+  VpcCidr:
+    Value: !GetAtt Vpc.CidrBlock
+  DefaultSecurityGroupId:
+    Description: Default security group of the VPC (CloudFormation cannot manage it; the deployment script removes its rules, VPC-02)
+    Value: !GetAtt Vpc.DefaultSecurityGroup
+  PublicSubnetA:
+    Description: Public subnet of the first Availability Zone (the scheduler creates the NAT gateway here)
+    Value: !Ref PublicSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}:PublicSubnetA"
+  PublicSubnetB:
+    Value: !Ref PublicSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}:PublicSubnetB"
+  PrivateSubnetA:
+    Value: !Ref PrivateSubnetA
+    Export:
+      Name: !Sub "${AWS::StackName}:PrivateSubnetA"
+  PrivateSubnetB:
+    Value: !Ref PrivateSubnetB
+    Export:
+      Name: !Sub "${AWS::StackName}:PrivateSubnetB"
+  PublicRouteTableId:
+    Value: !Ref PublicRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}:PublicRouteTableId"
+  PrivateRouteTableId:
+    Description: Private route table of the first zone (in dev also of the second; the scheduler owns its default route)
+    Value: !Ref PrivateRouteTable
+    Export:
+      Name: !Sub "${AWS::StackName}:PrivateRouteTableId"
+  PrivateRouteTableBId:
+    Description: Private route table of the second zone (prod only)
+    Condition: NatPerAz
+    Value: !Ref PrivateRouteTableB
+  NatEipAllocationId:
+    Description: Allocation ID of the Elastic IP for the NAT gateway
+    Value: !GetAtt NatEip.AllocationId
+    Export:
+      Name: !Sub "${AWS::StackName}:NatEipAllocationId"
+  AlbSecurityGroupId:
+    Value: !Ref AlbSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:AlbSecurityGroupId"
+  NodeSecurityGroupId:
+    Value: !Ref NodeSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:NodeSecurityGroupId"
+  DatabaseSecurityGroupId:
+    Value: !Ref DatabaseSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:DatabaseSecurityGroupId"
+  ProxySecurityGroupId:
+    Value: !Ref ProxySecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:ProxySecurityGroupId"
+  CodeBuildSecurityGroupId:
+    Value: !Ref CodeBuildSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:CodeBuildSecurityGroupId"
+  BastionSecurityGroupId:
+    Value: !Ref BastionSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:BastionSecurityGroupId"
+  RotationSecurityGroupId:
+    Value: !Ref RotationSecurityGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:RotationSecurityGroupId"

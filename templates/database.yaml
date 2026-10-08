@@ -1,0 +1,382 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Database stack of the EKS backend: DB subnet group, parameter group (TLS forced), PostgreSQL 17 instance
+  with the master secret managed by RDS (Single-AZ in dev, Multi-AZ in prod), the application secret
+  (generated password, no host), and the RDS Proxy (TLS required, application secret registered) with its
+  role and target group. The rotation schedules and the rotation function are in the rotation stack.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  InstanceClass:
+    Type: String
+    Default: db.t4g.micro
+    AllowedPattern: "^db\\.(t4g|[mrx][6-9]g|[mrx][6-9]gd)\\.[a-z0-9]+$"
+    Description: Graviton instance class (RDS-14)
+  AllocatedStorageGb:
+    Type: Number
+    Default: 20
+  DbName:
+    Type: String
+    Default: calculator
+    AllowedPattern: "^[a-z][a-z0-9_]*$"
+  AppUsername:
+    Type: String
+    Default: calc_app
+    AllowedPattern: "^[a-z][a-z0-9_]*$"
+    Description: Base database user of the application (the alternate user used by the rotation is <name>_clone)
+  DbMultiAz:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Multi-AZ; read only by the prod instance (the dev instance is always Single-AZ)
+  DbBackupRetentionDays:
+    Type: Number
+    MinValue: 1
+    MaxValue: 35
+    Description: Automated backup retention in days (1 in dev, 15 in prod)
+  DbDeletionProtection:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Deletion protection; read only by the prod instance (the dev instance never has it)
+  EnableDbLogExports:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: Ship the postgresql and upgrade logs to CloudWatch Logs (prod only)
+  LogRetentionDays:
+    Type: Number
+
+Conditions:
+  IsProd: !Equals [!Ref EnvType, prod]
+  IsDev: !Equals [!Ref EnvType, dev]
+  ExportLogs: !Equals [!Ref EnableDbLogExports, "true"]
+
+# Production safeguards cannot be switched off by a wrong parameter file: the deployment is refused.
+Rules:
+  ProdSafeguards:
+    RuleCondition: !Equals [!Ref EnvType, prod]
+    Assertions:
+      - Assert: !Equals [!Ref DbMultiAz, "true"]
+        AssertDescription: Multi-AZ is required in prod
+      - Assert: !Equals [!Ref DbDeletionProtection, "true"]
+        AssertDescription: Deletion protection is required in prod
+      - Assert: !Equals [!Ref EnableDbLogExports, "true"]
+        AssertDescription: Engine log export is required in prod
+      - Assert: !Not [!Contains [["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14"], !Ref DbBackupRetentionDays]]
+        AssertDescription: Prod backup retention must be at least 15 days
+
+Resources:
+  SubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: !Sub "dbsg-${RegionCode}-${Context}-eks-${EnvType}"
+      DBSubnetGroupDescription: Private subnets of both zones for the calculator database
+      SubnetIds:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+
+  ParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      DBParameterGroupName: !Sub "dbpg-${RegionCode}-${Context}-eks-${EnvType}"
+      Family: postgres17
+      Description: "Calculator database: TLS required"
+      Parameters:
+        rds.force_ssl: "1"
+
+  # Exported engine logs: created here (not by RDS) so they have the key and the retention.
+  PostgresqlLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ExportLogs
+    Properties:
+      LogGroupName: !Sub "/aws/rds/instance/rds-${RegionCode}-${Context}-eks-${EnvType}/postgresql"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  UpgradeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Condition: ExportLogs
+    Properties:
+      LogGroupName: !Sub "/aws/rds/instance/rds-${RegionCode}-${Context}-eks-${EnvType}/upgrade"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  # DeletionPolicy and UpdateReplacePolicy take literal values only (no Fn::If), so the instance is declared
+  # twice with opposite conditions on EnvType: exactly one exists per environment, with the same physical
+  # name. The prod copy keeps a final snapshot, Multi-AZ and deletion protection; the dev copy keeps nothing.
+  DbInstanceProd:
+    Type: AWS::RDS::DBInstance
+    Condition: IsProd
+    Metadata:
+      cfn-lint:
+        config:
+          # W3691 flags EngineVersion "17" because it is not a full version from the bundled list. A major
+          # version prefix is accepted by RDS (AWS picks the current minor; automatic minor upgrades move it).
+          ignore_checks: [W3691]
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub "rds-${RegionCode}-${Context}-eks-${EnvType}"
+      Engine: postgres
+      EngineVersion: "17"
+      DBInstanceClass: !Ref InstanceClass
+      StorageType: gp3
+      AllocatedStorage: !Ref AllocatedStorageGb
+      StorageEncrypted: true
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+      MultiAZ: !Ref DbMultiAz
+      PubliclyAccessible: false
+      Port: "5432"
+      DBName: !Ref DbName
+      DBSubnetGroupName: !Ref SubnetGroup
+      DBParameterGroupName: !Ref ParameterGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:DatabaseSecurityGroupId"
+      # No password: RDS creates the master secret in Secrets Manager (customer key) and rotates it.
+      MasterUsername: calcadmin
+      ManageMasterUserPassword: true
+      MasterUserSecret:
+        KmsKeyId:
+          Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+      EnableIAMDatabaseAuthentication: false
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      DeleteAutomatedBackups: true
+      EnablePerformanceInsights: false
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      DeletionProtection: !Ref DbDeletionProtection
+      # The Select over a two-item list returns the log type and references the log group, so the
+      # instance is created after its log groups without a conditional DependsOn.
+      EnableCloudwatchLogsExports: !If
+        - ExportLogs
+        - - !Select [0, [postgresql, !Ref PostgresqlLogGroup]]
+          - !Select [0, [upgrade, !Ref UpgradeLogGroup]]
+        - !Ref AWS::NoValue
+
+  DbInstanceDev:
+    Type: AWS::RDS::DBInstance
+    Condition: IsDev
+    Metadata:
+      cfn-lint:
+        config:
+          ignore_checks: [W3691]
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      DBInstanceIdentifier: !Sub "rds-${RegionCode}-${Context}-eks-${EnvType}"
+      Engine: postgres
+      EngineVersion: "17"
+      DBInstanceClass: !Ref InstanceClass
+      StorageType: gp3
+      AllocatedStorage: !Ref AllocatedStorageGb
+      StorageEncrypted: true
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+      MultiAZ: false # RDS-08: Single-AZ in non-prod
+      PubliclyAccessible: false
+      Port: "5432"
+      DBName: !Ref DbName
+      DBSubnetGroupName: !Ref SubnetGroup
+      DBParameterGroupName: !Ref ParameterGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:DatabaseSecurityGroupId"
+      MasterUsername: calcadmin
+      ManageMasterUserPassword: true
+      MasterUserSecret:
+        KmsKeyId:
+          Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+      EnableIAMDatabaseAuthentication: false
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      DeleteAutomatedBackups: true
+      EnablePerformanceInsights: false
+      BackupRetentionPeriod: !Ref DbBackupRetentionDays
+      DeletionProtection: false # dev is ephemeral: it must be destroyable
+      EnableCloudwatchLogsExports: !If
+        - ExportLogs
+        - - !Select [0, [postgresql, !Ref PostgresqlLogGroup]]
+          - !Select [0, [upgrade, !Ref UpgradeLogGroup]]
+        - !Ref AWS::NoValue
+
+  # ---------------------------------------------------------
+  # Application secret. The initial password is generated by Secrets Manager (32 characters, no punctuation)
+  # and never appears in the template. It holds username, password and dbname and NO host: the pods use
+  # the proxy endpoint and the rotation function and the migration use the instance endpoint, both from
+  # their own configuration. The migration job creates the database user; the rotation then alternates users.
+  # ---------------------------------------------------------
+  AppSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "sm-${RegionCode}-${Context}-eks-app-${EnvType}"
+      Description: Credential of the limited application database user (alternating users, rotated by the rotation stack)
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"dbname":"${DbName}","username":"${AppUsername}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludePunctuation: true
+
+  # Every secret has a resource policy that refuses non-TLS access (SCRT-06, SCRT-07).
+  AppSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref AppSecret
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: secretsmanager:*
+            Resource: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  MasterSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !If [IsProd, !GetAtt DbInstanceProd.MasterUserSecret.SecretArn, !GetAtt DbInstanceDev.MasterUserSecret.SecretArn]
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: secretsmanager:*
+            Resource: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # ---------------------------------------------------------
+  # RDS Proxy: the pods connect here (D9). Role limited to the application secret; the key is used through
+  # Secrets Manager only and by alias (D11).
+  # ---------------------------------------------------------
+  ProxyRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-proxy-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: rds.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  ProxyRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-proxy-${EnvType}"
+      RoleName: !Ref ProxyRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadTheApplicationSecret
+            Effect: Allow
+            Action:
+              - secretsmanager:GetSecretValue
+              - secretsmanager:DescribeSecret
+            Resource: !Ref AppSecret
+          - Sid: DecryptTheSecretWithTheDataKey
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: "*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+
+  Proxy:
+    Type: AWS::RDS::DBProxy
+    DependsOn: ProxyRolePolicy
+    Properties:
+      DBProxyName: !Sub "rdsp-${RegionCode}-${Context}-eks-${EnvType}"
+      EngineFamily: POSTGRESQL
+      RequireTLS: true # RDS-19
+      IdleClientTimeout: 1800
+      DebugLogging: false
+      RoleArn: !GetAtt ProxyRole.Arn
+      Auth:
+        - AuthScheme: SECRETS
+          SecretArn: !Ref AppSecret
+          IAMAuth: DISABLED # team rule: no IAM database authentication
+          ClientPasswordAuthType: POSTGRES_SCRAM_SHA_256
+          Description: Limited application user
+      VpcSubnetIds:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+      VpcSecurityGroupIds:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:ProxySecurityGroupId"
+
+  ProxyTargetGroup:
+    Type: AWS::RDS::DBProxyTargetGroup
+    Properties:
+      DBProxyName: !Ref Proxy
+      TargetGroupName: default
+      DBInstanceIdentifiers:
+        - !If [IsProd, !Ref DbInstanceProd, !Ref DbInstanceDev]
+      ConnectionPoolConfigurationInfo:
+        MaxConnectionsPercent: 90
+        MaxIdleConnectionsPercent: 50
+        ConnectionBorrowTimeout: 120
+
+Outputs:
+  ProxyEndpoint:
+    Description: Endpoint of the RDS Proxy (what the pods connect to)
+    Value: !GetAtt Proxy.Endpoint
+    Export:
+      Name: !Sub "${AWS::StackName}:ProxyEndpoint"
+  ProxyName:
+    Value: !Ref Proxy
+    Export:
+      Name: !Sub "${AWS::StackName}:ProxyName"
+  EndpointAddress:
+    Description: DNS name of the database instance (migration job and rotation function only)
+    Value: !If [IsProd, !GetAtt DbInstanceProd.Endpoint.Address, !GetAtt DbInstanceDev.Endpoint.Address]
+    Export:
+      Name: !Sub "${AWS::StackName}:EndpointAddress"
+  Port:
+    Value: !If [IsProd, !GetAtt DbInstanceProd.Endpoint.Port, !GetAtt DbInstanceDev.Endpoint.Port]
+    Export:
+      Name: !Sub "${AWS::StackName}:Port"
+  DbName:
+    Value: !Ref DbName
+    Export:
+      Name: !Sub "${AWS::StackName}:DbName"
+  AppUsername:
+    Value: !Ref AppUsername
+    Export:
+      Name: !Sub "${AWS::StackName}:AppUsername"
+  AppSecretArn:
+    Value: !Ref AppSecret
+    Export:
+      Name: !Sub "${AWS::StackName}:AppSecretArn"
+  MasterSecretArn:
+    Description: ARN of the master secret created and managed by RDS
+    Value: !If [IsProd, !GetAtt DbInstanceProd.MasterUserSecret.SecretArn, !GetAtt DbInstanceDev.MasterUserSecret.SecretArn]
+    Export:
+      Name: !Sub "${AWS::StackName}:MasterSecretArn"
+  InstanceIdentifier:
+    Value: !If [IsProd, !Ref DbInstanceProd, !Ref DbInstanceDev]
+    Export:
+      Name: !Sub "${AWS::StackName}:InstanceIdentifier"

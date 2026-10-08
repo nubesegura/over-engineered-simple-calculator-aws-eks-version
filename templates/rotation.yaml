@@ -1,0 +1,232 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: >-
+  Rotation stack of the EKS backend: the alternating-user rotation function (code in src/rotation, packaged by
+  sam build) in the private subnets, its log group and role scoped to the two secrets, the permission for
+  Secrets Manager, the rotation schedules of the application secret and of the RDS-managed master secret
+  (every 3 days, inside the hours when the NAT gateway is up), and the error alarm. The secrets and the
+  database are in the database stack.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  LogRetentionDays:
+    Type: Number
+  RotationLogLevel:
+    Type: String
+    Default: INFO
+    AllowedValues: [DEBUG, INFO, WARNING, ERROR]
+  RotationWindowStartHourUtc:
+    Type: Number
+    MinValue: 0
+    MaxValue: 23
+    Description: Start hour (UTC) of the rotation window; it must sit inside the NAT-on hours (08:00-22:00 Panama)
+  RotationWindowDuration:
+    Type: String
+    AllowedPattern: "^[0-9]+h$"
+    Description: Length of the rotation window (for example 8h); it cannot cross midnight UTC
+
+Resources:
+  # Created here so it has retention, the data key and the tags (Lambda would create it without them).
+  FunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/lambda/fnc-${RegionCode}-${Context}-eks-db-rotation-${EnvType}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  # ---------------------------------------------------------
+  # Function role: the application secret (its versions) and the master secret (read), D18
+  # ---------------------------------------------------------
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-db-rotation-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  FunctionRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-db-rotation-${EnvType}"
+      RoleName: !Ref FunctionRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: RotateTheApplicationSecret
+            Effect: Allow
+            Action:
+              - secretsmanager:DescribeSecret
+              - secretsmanager:GetSecretValue
+              - secretsmanager:PutSecretValue
+              - secretsmanager:UpdateSecretVersionStage
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+          - Sid: ReadTheMasterSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:MasterSecretArn"
+          # GetRandomPassword does not support resource-level permissions.
+          - Sid: GenerateRandomPassword
+            Effect: Allow
+            Action: secretsmanager:GetRandomPassword
+            Resource: "*"
+          - Sid: UseTheDataKeyThroughSecretsManager
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: "*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+          # The network interface actions are called while the function is created, before any resource exists.
+          - Sid: VpcNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DeleteNetworkInterface
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: "*"
+          - Sid: WriteOwnLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub "${FunctionLogGroup.Arn}:*"
+
+  # ---------------------------------------------------------
+  # Rotation function: private subnets, rotation security group (443 and the database), no reserved concurrency
+  # ---------------------------------------------------------
+  RotationFunction:
+    Type: AWS::Serverless::Function
+    DependsOn: FunctionRolePolicy
+    Properties:
+      FunctionName: !Sub "fnc-${RegionCode}-${Context}-eks-db-rotation-${EnvType}"
+      Role: !GetAtt FunctionRole.Arn
+      Runtime: python3.14
+      Architectures: [arm64]
+      Handler: app.lambda_handler
+      Timeout: 60
+      MemorySize: 256
+      CodeUri: ../src/rotation
+      Environment:
+        Variables:
+          # The instance endpoint, not the proxy: the rotation changes the user on the database itself.
+          DB_HOST:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:EndpointAddress"
+          DB_PORT:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:Port"
+          DB_NAME:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:DbName"
+          MASTER_SECRET_ARN:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:MasterSecretArn"
+          SSL_ROOT_CERT: /var/task/rds-global-bundle.pem
+          LOG_LEVEL: !Ref RotationLogLevel
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:RotationSecurityGroupId"
+      LoggingConfig:
+        LogFormat: JSON
+        LogGroup: !Ref FunctionLogGroup
+    # `sam build` runs src/rotation/Makefile (target build-RotationFunction), which packages the RDS CA bundle.
+    Metadata:
+      BuildMethod: makefile
+
+  # Only Secrets Manager, only from this account, and only for the application secret (D18).
+  SecretsManagerPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref RotationFunction
+      Principal: secretsmanager.amazonaws.com
+      SourceAccount: !Ref AWS::AccountId
+      SourceArn:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+
+  # ---------------------------------------------------------
+  # Schedules. No rotation at deploy time: the first run of the application secret needs the database user,
+  # which the migration job creates after the database stack.
+  # ---------------------------------------------------------
+  AppSecretRotation:
+    Type: AWS::SecretsManager::RotationSchedule
+    DependsOn: SecretsManagerPermission
+    Properties:
+      SecretId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+      RotationLambdaARN: !GetAtt RotationFunction.Arn
+      RotateImmediatelyOnUpdate: false
+      RotationRules:
+        ScheduleExpression: !Sub "cron(0 ${RotationWindowStartHourUtc} 1,4,7,10,13,16,19,22,25,28 * ? *)"
+        Duration: !Ref RotationWindowDuration
+
+  # Managed rotation of the RDS master secret: RDS runs the rotation, so no function is set; only the schedule.
+  MasterSecretRotation:
+    Type: AWS::SecretsManager::RotationSchedule
+    Properties:
+      SecretId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:MasterSecretArn"
+      RotateImmediatelyOnUpdate: false
+      RotationRules:
+        ScheduleExpression: !Sub "cron(0 ${RotationWindowStartHourUtc} 2,5,8,11,14,17,20,23,26,29 * ? *)"
+        Duration: !Ref RotationWindowDuration
+
+  # ---------------------------------------------------------
+  # Alarm on function errors
+  # ---------------------------------------------------------
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-db-rotation-errors-${EnvType}"
+      AlarmDescription: "The database rotation function failed: the application credential may not have rotated"
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref RotationFunction
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+Outputs:
+  FunctionName:
+    Value: !Ref RotationFunction
+  FunctionArn:
+    Value: !GetAtt RotationFunction.Arn
+  FunctionRoleArn:
+    Description: ARN of the rotation function role
+    Value: !GetAtt FunctionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:FunctionRoleArn"

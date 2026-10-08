@@ -1,0 +1,31 @@
+name: Deploy DEV
+
+# Infrastructure-only subset of task 4.8: the base stacks (security, network, registry, scheduler, database,
+# rotation) are deployed to dev with real change sets. The owner starts it by hand.
+# TODO (task 4.8): enable the push trigger on develop (add `push: branches: [develop]`) once the application
+# is deployable. It is deliberately absent now.
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two deployments (or a deployment and a destroy) against dev at once.
+concurrency:
+  group: deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: ci
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: dev
+    secrets:
+      ROLE_ARN: ${{ secrets.ROLE_ARN }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
