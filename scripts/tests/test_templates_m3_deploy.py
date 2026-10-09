@@ -294,6 +294,8 @@ class Sandbox:
         (self.bin / "unzip").write_text(
             '#!/usr/bin/env bash\nexec "$PYTHON_FOR_STUB" -m zipfile -e "$2" "$4"\n', encoding="utf-8", newline="\n"
         )
+        for stub in self.bin.iterdir():
+            stub.chmod(0o755)
 
     def archive(self, files: dict[str, str]) -> str:
         path = self.bucket / "source.zip"

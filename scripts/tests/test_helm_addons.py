@@ -92,6 +92,8 @@ def run_script(tmp_path: Path) -> Any:
     bin_dir.mkdir()
     (bin_dir / "helm").write_text(FAKE_HELM, encoding="utf-8", newline="\n")
     (bin_dir / "kubectl").write_text(FAKE_KUBECTL, encoding="utf-8", newline="\n")
+    for stub in bin_dir.iterdir():
+        stub.chmod(0o755)  # without the exec bit a real helm on PATH wins on Linux
     log = tmp_path / "helm.log"
     kubectl_log = tmp_path / "kubectl.log"
 
