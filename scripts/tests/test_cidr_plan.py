@@ -21,7 +21,7 @@ OTHER_RANGES = {
 
 def parameter(env: str, name: str) -> ipaddress.IPv4Network:
     data = json.loads((REPO / "parameters" / f"{env}.json").read_text(encoding="utf-8"))
-    return ipaddress.ip_network(data["Parameters"][name])
+    return ipaddress.IPv4Network(data["Parameters"][name])
 
 
 @pytest.mark.parametrize("env", ["dev", "prod"])

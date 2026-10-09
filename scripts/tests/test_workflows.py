@@ -73,7 +73,7 @@ def test_deploy_refuses_prod_before_anything_else() -> None:
     assert first["env"]["TARGET"] == "${{ inputs.environment }}"
 
 
-def test_deploy_runs_the_guards_in_order_and_stops_at_rotation() -> None:
+def test_deploy_runs_the_guards_in_order_and_builds_after_the_stacks() -> None:
     workflow = load("deploy.yml")
     runs = [step["run"] for step in steps(workflow) if "run" in step]
     joined = "\n".join(runs)
@@ -82,10 +82,11 @@ def test_deploy_runs_the_guards_in_order_and_stops_at_rotation() -> None:
         "iac_owner_guard.py check --tool cloudformation --env dev",
         "package_rotation.py",
         "cfn_deploy.py deploy --env dev --through",
+        "run_deploy_build.py run --env dev --command addons",
     ]
     positions = [joined.index(item) for item in order]
     assert positions == sorted(positions)
-    assert workflow["env"]["LAST_UNIT"] == "rotation"
+    assert workflow["env"]["LAST_UNIT"] == "bastion"
 
 
 def test_account_comparison_is_masked() -> None:
@@ -140,3 +141,13 @@ def test_last_unit_exists_in_the_dev_stack_list() -> None:
         e["unit"] for e in json.loads((REPO / "templates" / "stacks.json").read_text("utf-8"))["environments"]["dev"]
     ]
     assert load("deploy.yml")["env"]["LAST_UNIT"] in units
+
+
+def test_ci_installs_pinned_helm_with_checksum_and_shellcheck() -> None:
+    env = load("ci.yml")["env"]
+    assert env["HELM_VERSION"] == "v3.22.0"
+    assert re.fullmatch("[0-9a-f]{64}", env["HELM_AMD64_SHA256"])
+    text = " ".join(step.get("run", "") for step in steps(load("ci.yml")))
+    assert "sha256sum -c" in text and "shellcheck scripts/*.sh" in text
+    # the arm64 pin of the build project belongs to the same release
+    assert env["HELM_VERSION"] in (REPO / "templates" / "deploy.yaml").read_text(encoding="utf-8")

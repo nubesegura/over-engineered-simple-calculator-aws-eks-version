@@ -1,9 +1,10 @@
 name: Deploy
 
 # Reusable deployment (infrastructure-only subset of task 4.8). Only dev works for now; prod is refused.
-# Deploys the stacks of templates/stacks.json up to and including `rotation` with change sets guarded
-# against removals and replacements (scripts/cfn_deploy.py). The stacks after `rotation` (storage, cluster,
-# deploy, bastion, alarms) and the application are added by the rest of task 4.8.
+# Deploys the stacks of templates/stacks.json up to and including `bastion` with change sets guarded
+# against removals and replacements (scripts/cfn_deploy.py; only the bastion may replace its instance), then
+# runs the CodeBuild deployment project with DEPLOY_COMMAND=addons. The stacks after `bastion` (storage,
+# alarms) and the application are added by the rest of task 4.8.
 #
 # SAM build: the runner has Python 3.14 (setup-python), the runtime of both functions, so `sam build` builds
 # natively and no container is used (same approach as the ecs repository).
@@ -30,7 +31,7 @@ env:
   PYTHON_VERSION: "3.14"
   CFN_LINT_VERSION: "1.48.1"
   SAM_CLI_VERSION: "1.158.0"
-  LAST_UNIT: rotation # last stack of this subset (see templates/stacks.json)
+  LAST_UNIT: bastion # last stack of this subset; storage and alarms have no templates yet (templates/stacks.json)
 
 jobs:
   deploy:
@@ -105,10 +106,15 @@ jobs:
         run: python scripts/package_rotation.py
 
       # Change sets: Remove actions and replacements stop the run before the change set is executed.
-      - name: Deploy the base stacks (security through rotation)
+      - name: Deploy the stacks (security through bastion)
         env:
           CFN_PARAM_SupportEmail: ${{ secrets.SUPPORT_EMAIL }}
         run: python scripts/cfn_deploy.py deploy --env dev --through "$LAST_UNIT"
+
+      # Zips scripts/, chart-addons/ (and chart/ when it exists), uploads it under <repo-name>/<env>/ of the SAM
+      # artifact bucket, starts the CodeBuild project with the SHA-256 and waits. A failed build fails the job.
+      - name: Install the cluster add-ons (CodeBuild, command addons)
+        run: python scripts/run_deploy_build.py run --env dev --command addons
 
       - name: Deployment summary
         if: ${{ success() }}
@@ -118,5 +124,5 @@ jobs:
             echo "### What the owner does next"
             echo "- Confirm the e-mail subscription of the alerts topic (SNS sends a confirmation message to the SUPPORT_EMAIL address)."
             echo "- Review the stacks and their tags in the console, then run Destroy DEV in plan mode when finished."
-            echo "- Stacks after \`rotation\` (storage, cluster, deploy, bastion, alarms) and the application are not deployed by this subset."
+            echo "- Stacks after \`bastion\` (storage, alarms) and the application are not deployed by this subset."
           } >> "$GITHUB_STEP_SUMMARY"

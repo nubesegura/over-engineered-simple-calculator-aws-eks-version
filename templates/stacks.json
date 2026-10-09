@@ -10,10 +10,10 @@
       {"unit": "scheduler", "stack": "stk-useast2-oecalc-eks-scheduler-dev", "template": "templates/scheduler.yaml", "sam": true, "onlyIf": {"parameter": "NatSchedulerEnabled", "equals": "true"}},
       {"unit": "database", "stack": "stk-useast2-oecalc-eks-database-dev", "template": "templates/database.yaml", "sam": false},
       {"unit": "rotation", "stack": "stk-useast2-oecalc-eks-rotation-dev", "template": "templates/rotation.yaml", "sam": true},
-      {"unit": "storage", "stack": "stk-useast2-oecalc-eks-storage-dev", "template": "templates/storage.yaml", "sam": false},
       {"unit": "cluster", "stack": "stk-useast2-oecalc-eks-cluster-dev", "template": "templates/cluster.yaml", "sam": false},
       {"unit": "deploy", "stack": "stk-useast2-oecalc-eks-deploy-dev", "template": "templates/deploy.yaml", "sam": false},
-      {"unit": "bastion", "stack": "stk-useast2-oecalc-eks-bastion-dev", "template": "templates/bastion.yaml", "sam": false, "onlyIf": {"parameter": "EnableBastion", "equals": "true"}},
+      {"unit": "bastion", "stack": "stk-useast2-oecalc-eks-bastion-dev", "template": "templates/bastion.yaml", "sam": false, "allowReplacement": ["AWS::EC2::Instance"], "onlyIf": {"parameter": "EnableBastion", "equals": "true"}},
+      {"unit": "storage", "stack": "stk-useast2-oecalc-eks-storage-dev", "template": "templates/storage.yaml", "sam": false},
       {"unit": "alarms", "stack": "stk-useast2-oecalc-eks-alarms-dev", "template": "templates/alarms.yaml", "sam": false}
     ],
     "prod": [
@@ -23,10 +23,10 @@
       {"unit": "scheduler", "stack": "stk-useast2-oecalc-eks-scheduler-prod", "template": "templates/scheduler.yaml", "sam": true, "onlyIf": {"parameter": "NatSchedulerEnabled", "equals": "true"}},
       {"unit": "database", "stack": "stk-useast2-oecalc-eks-database-prod", "template": "templates/database.yaml", "sam": false},
       {"unit": "rotation", "stack": "stk-useast2-oecalc-eks-rotation-prod", "template": "templates/rotation.yaml", "sam": true},
-      {"unit": "storage", "stack": "stk-useast2-oecalc-eks-storage-prod", "template": "templates/storage.yaml", "sam": false},
       {"unit": "cluster", "stack": "stk-useast2-oecalc-eks-cluster-prod", "template": "templates/cluster.yaml", "sam": false},
       {"unit": "deploy", "stack": "stk-useast2-oecalc-eks-deploy-prod", "template": "templates/deploy.yaml", "sam": false},
-      {"unit": "bastion", "stack": "stk-useast2-oecalc-eks-bastion-prod", "template": "templates/bastion.yaml", "sam": false, "onlyIf": {"parameter": "EnableBastion", "equals": "true"}},
+      {"unit": "bastion", "stack": "stk-useast2-oecalc-eks-bastion-prod", "template": "templates/bastion.yaml", "sam": false, "allowReplacement": ["AWS::EC2::Instance"], "onlyIf": {"parameter": "EnableBastion", "equals": "true"}},
+      {"unit": "storage", "stack": "stk-useast2-oecalc-eks-storage-prod", "template": "templates/storage.yaml", "sam": false},
       {"unit": "alarms", "stack": "stk-useast2-oecalc-eks-alarms-prod", "template": "templates/alarms.yaml", "sam": false}
     ]
   }

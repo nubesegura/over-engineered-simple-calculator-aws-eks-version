@@ -20,6 +20,9 @@ fills SupportEmail, and CFN_PARAM_<Name> overrides any parameter (values that li
 mandatory tags of parameters/<env>.json are applied as stack tags (CloudFormation propagates them to the
 resources) and also fill the Tag* parameters of the scheduler stack.
 
+A unit with "allowReplacement" (a list of resource types) in stacks.json may replace those types in its own
+stack only; the global allowlist stays empty.
+
 A unit with "onlyIf" in stacks.json is deployed only when the named parameter has the given value; destroy
 removes every stack that exists, whatever the parameter says.
 
@@ -319,6 +322,7 @@ def change_set_name(run_id: str, attempt: str, unit: str) -> str:
 
 def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, allowed: frozenset[str]) -> None:
     stack = entry["stack"]
+    allowed = allowed | frozenset(entry.get("allowReplacement", []))  # per unit, e.g. the stateless bastion
     print(f"::group::{stack}")
     status = stack_status(stack)
     if status in ("ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "DELETE_FAILED") or (status or "").endswith("_IN_PROGRESS"):

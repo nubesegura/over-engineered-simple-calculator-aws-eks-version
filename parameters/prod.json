@@ -7,6 +7,7 @@
     "EnableFlowLogs": "true",
     "NatGatewayPerAz": "true",
     "KeyAdminRoleName": "github-actions-terraform-prod-role",
+    "AutoScalingServiceLinkedRoleExists": "false",
     "KmsDeletionWindowDays": "30",
     "NatSchedulerEnabled": "false",
     "NatOffSchedule": "cron(0 22 * * ? *)",
@@ -29,7 +30,13 @@
     "NodeMinSize": "2",
     "NodeDesiredSize": "2",
     "NodeMaxSize": "4",
-    "WafAclArn": ""
+    "VpcCniVersion": "v1.22.4-eksbuild.3",
+    "CoreDnsVersion": "v1.14.7-eksbuild.10",
+    "KubeProxyVersion": "v1.37.0-eksbuild.4",
+    "PodIdentityAgentVersion": "v1.3.10-eksbuild.3",
+    "MetricsServerVersion": "v0.9.0-eksbuild.11",
+    "WafAclArn": "",
+    "AllowAutoscalerMinorSkew": "false"
   },
   "Tags": {
     "team-owner": "nube-segura",

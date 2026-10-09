@@ -1,0 +1,27 @@
+# Read-only access to nodes and node metrics for the bastion (requirement 10.2). AmazonEKSViewPolicy does not
+# cover cluster-scoped nodes. The group is attached to the bastion access entry (templates/bastion.yaml).
+# Applied by scripts/helm_addons.sh with kubectl apply.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: calc-operator-nodes-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["metrics.k8s.io"]
+    resources: ["nodes", "pods"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: calc-operator-nodes-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: calc-operator-nodes-readonly
+subjects:
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: calc-operator-readonly

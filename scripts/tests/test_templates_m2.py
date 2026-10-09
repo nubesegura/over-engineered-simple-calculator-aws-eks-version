@@ -17,7 +17,7 @@ NAT_ON_START_UTC = 13  # 08:00 Panama (UTC-5)
 def load_cfn(name: str) -> dict[str, Any]:
     """Load a CloudFormation YAML file; intrinsic short forms become {"Fn::X": value} like in JSON."""
 
-    class Loader(yaml.SafeLoader):
+    class Loader(yaml.SafeLoader):  # type: ignore[misc]
         pass
 
     def construct(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> Any:

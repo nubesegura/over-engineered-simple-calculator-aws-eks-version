@@ -1,0 +1,915 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Cluster stack of the EKS backend: cluster and node IAM roles, the private EKS cluster (secrets encrypted with
+  the secrets key, control plane logs into a log group with the data key, access entries API mode only), the
+  managed node group with its launch template, the five EKS add-ons with pinned versions, and one IAM role per
+  workload with its EKS Pod Identity association (load balancer controller, cluster autoscaler, calc, history,
+  migrate). The access entries of the deployment build and the bastion are created by their own stacks.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  KubernetesVersion:
+    Type: String
+    AllowedPattern: "^1\\.[0-9]{2}$"
+    Description: >-
+      Kubernetes minor version. Always the newest in standard support when the environment is created
+      (scripts/eks_latest_version.py checks it); a newer value than the service offers fails the deployment.
+  ServiceIpv4Cidr:
+    Type: String
+    AllowedPattern: "^((10\\.[0-9]{1,3})|(172\\.(1[6-9]|2[0-9]|3[01])))\\.[0-9]{1,3}\\.[0-9]{1,3}/(1[2-9]|2[0-4])$"
+    Description: Kubernetes service range (inside the cluster, must not overlap the VPC range); fixed once the cluster exists
+  NodeMinSize:
+    Type: Number
+    MinValue: 1
+    Description: Minimum nodes of the node group (2 = one per Availability Zone)
+  NodeDesiredSize:
+    Type: Number
+    MinValue: 1
+  NodeMaxSize:
+    Type: Number
+    MinValue: 1
+    Description: Maximum nodes (cost cap; the cluster autoscaler never goes above it)
+  NodeInstanceType:
+    Type: String
+    Default: t4g.medium
+    AllowedPattern: "^[a-z][a-z0-9]*g[a-z]*\\.[a-z0-9]+$"
+    Description: Graviton (arm64) instance type of the nodes
+  NodeVolumeSizeGb:
+    Type: Number
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+    Description: Size of the encrypted gp3 root volume of each node
+  LogRetentionDays:
+    Type: Number
+    Description: Retention of the control plane log group (14 in dev, 90 in prod)
+  VpcCniVersion:
+    Type: String
+    AllowedPattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$"
+    Description: Add-on version of vpc-cni (aws eks describe-addon-versions --kubernetes-version <v> --addon-name vpc-cni)
+  CoreDnsVersion:
+    Type: String
+    AllowedPattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$"
+  KubeProxyVersion:
+    Type: String
+    AllowedPattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$"
+  PodIdentityAgentVersion:
+    Type: String
+    AllowedPattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$"
+  MetricsServerVersion:
+    Type: String
+    AllowedPattern: "^v[0-9]+\\.[0-9]+\\.[0-9]+-eksbuild\\.[0-9]+$"
+  # The five mandatory tags: the node volumes and instances are created by Auto Scaling from the launch template
+  # and do not inherit the stack tags. The deploy script fills these from the Tags section of parameters/<env>.json.
+  TagTeamOwner:
+    Type: String
+  TagProjectName:
+    Type: String
+  TagAppName:
+    Type: String
+  TagRepoName:
+    Type: String
+
+Conditions:
+  IsProd: !Equals [!Ref EnvType, prod]
+
+Resources:
+  # ---------------------------------------------------------
+  # Roles of the cluster and the nodes (managed policies only)
+  # ---------------------------------------------------------
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-cluster-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: eks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSClusterPolicy"
+
+  # The control plane uses this role for the envelope encryption of Kubernetes secrets. Only the secrets key, by
+  # alias. No kms:ViaService here: the calls come from the EKS control plane with the cluster role, and a wrong
+  # service name would break the cluster creation (to be confirmed by the first deployment).
+  ClusterRoleSecretsKeyPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-cluster-secrets-${EnvType}"
+      RoleName: !Ref ClusterRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: UseTheSecretsKeyByAlias
+            Effect: Allow
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ListGrants
+              - kms:DescribeKey
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:SecretsKeyAlias"
+
+  # Name fixed: the ECR repository policy of the registry stack lets this exact role pull images.
+  NodeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-node-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKSWorkerNodePolicy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEKS_CNI_Policy"
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonEC2ContainerRegistryPullOnly"
+
+  # ---------------------------------------------------------
+  # Control plane log group (created here so it has the data key and the retention; the cluster would create
+  # an unencrypted one that never expires)
+  # ---------------------------------------------------------
+  ClusterLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/eks/eksc-${RegionCode}-${Context}-${EnvType}/cluster"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  # ---------------------------------------------------------
+  # Cluster: private endpoint only, access entries only, standard support only
+  # ---------------------------------------------------------
+  Cluster:
+    Type: AWS::EKS::Cluster
+    DependsOn:
+      - ClusterLogGroup
+      - ClusterRoleSecretsKeyPolicy
+    Properties:
+      Name: !Sub "eksc-${RegionCode}-${Context}-${EnvType}"
+      Version: !Ref KubernetesVersion
+      RoleArn: !GetAtt ClusterRole.Arn
+      DeletionProtection: !If [IsProd, true, false]
+      # The add-ons are EKS add-ons of this stack with pinned versions; the self-managed copies are not created.
+      BootstrapSelfManagedAddons: false
+      AccessConfig:
+        AuthenticationMode: API # no aws-auth ConfigMap
+        BootstrapClusterCreatorAdminPermissions: false # no implicit administrator
+      UpgradePolicy:
+        SupportType: STANDARD # extended support costs extra
+      ResourcesVpcConfig:
+        EndpointPrivateAccess: true # EKS-02
+        EndpointPublicAccess: false # EKS-01
+        SubnetIds:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+      KubernetesNetworkConfig:
+        IpFamily: ipv4
+        ServiceIpv4Cidr: !Ref ServiceIpv4Cidr
+      EncryptionConfig: # EKS-03, the API takes the key ARN or the alias ARN
+        - Resources: [secrets]
+          Provider:
+            KeyArn: !Sub
+              - "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:${Alias}"
+              - Alias:
+                  Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:SecretsKeyAlias"
+      Logging: # EKS-04
+        ClusterLogging:
+          EnabledTypes:
+            - Type: api
+            - Type: audit
+            - Type: authenticator
+            - Type: controllerManager
+            - Type: scheduler
+      Tags:
+        - Key: Name
+          Value: !Sub "eksc-${RegionCode}-${Context}-${EnvType}"
+
+  # ---------------------------------------------------------
+  # Add-ons that do not need nodes, installed before the node group
+  # ---------------------------------------------------------
+  VpcCniAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: vpc-cni
+      AddonVersion: !Ref VpcCniVersion
+      ResolveConflicts: OVERWRITE
+      # Kubernetes network policies (the application namespace is default deny, design D8)
+      ConfigurationValues: '{"enableNetworkPolicy": "true"}'
+
+  KubeProxyAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: kube-proxy
+      AddonVersion: !Ref KubeProxyVersion
+      ResolveConflicts: OVERWRITE
+
+  PodIdentityAgentAddon:
+    Type: AWS::EKS::Addon
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: eks-pod-identity-agent
+      AddonVersion: !Ref PodIdentityAgentVersion
+      ResolveConflicts: OVERWRITE
+
+  # ---------------------------------------------------------
+  # Node group: launch template (IMDSv2, hop limit 1, encrypted gp3, no key pair) and managed node group
+  # ---------------------------------------------------------
+  NodeLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub "lt-${RegionCode}-${Context}-eks-node-${EnvType}"
+      LaunchTemplateData:
+        MetadataOptions: # EC2-08
+          HttpEndpoint: enabled
+          HttpTokens: required
+          HttpPutResponseHopLimit: 1
+        # Both groups: the node group of the network stack (pod port from the load balancer, database path) and the
+        # cluster security group (control plane and node-to-node traffic). With a launch template EKS does not add
+        # the cluster group by itself.
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:NodeSecurityGroupId"
+          - !GetAtt Cluster.ClusterSecurityGroupId
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeType: gp3
+              VolumeSize: !Ref NodeVolumeSizeGb
+              Encrypted: true
+              # Alias: a recreated key keeps it. The key policy of the security stack must let the Auto Scaling
+              # service-linked role use the key (open decision, see the milestone report), or no node can launch.
+              KmsKeyId:
+                Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub "ec2-${RegionCode}-${Context}-eks-node-${EnvType}"
+              - Key: team-owner
+                Value: !Ref TagTeamOwner
+              - Key: project-name
+                Value: !Ref TagProjectName
+              - Key: app-name
+                Value: !Ref TagAppName
+              - Key: repo-name
+                Value: !Ref TagRepoName
+              - Key: env-type
+                Value: !Ref EnvType
+              - Key: k8s.io/cluster-autoscaler/enabled
+                Value: "true"
+              - Key: !Sub "k8s.io/cluster-autoscaler/eksc-${RegionCode}-${Context}-${EnvType}"
+                Value: owned
+          - ResourceType: volume
+            Tags:
+              - Key: Name
+                Value: !Sub "ebs-${RegionCode}-${Context}-eks-node-${EnvType}"
+              - Key: team-owner
+                Value: !Ref TagTeamOwner
+              - Key: project-name
+                Value: !Ref TagProjectName
+              - Key: app-name
+                Value: !Ref TagAppName
+              - Key: repo-name
+                Value: !Ref TagRepoName
+              - Key: env-type
+                Value: !Ref EnvType
+          - ResourceType: network-interface
+            Tags:
+              - Key: team-owner
+                Value: !Ref TagTeamOwner
+              - Key: project-name
+                Value: !Ref TagProjectName
+              - Key: app-name
+                Value: !Ref TagAppName
+              - Key: repo-name
+                Value: !Ref TagRepoName
+              - Key: env-type
+                Value: !Ref EnvType
+
+  NodeGroup:
+    Type: AWS::EKS::Nodegroup
+    DependsOn:
+      - VpcCniAddon
+      - KubeProxyAddon
+      - PodIdentityAgentAddon
+    Properties:
+      NodegroupName: !Sub "eksng-${RegionCode}-${Context}-${EnvType}"
+      ClusterName: !Ref Cluster
+      NodeRole: !GetAtt NodeRole.Arn
+      AmiType: AL2023_ARM_64_STANDARD
+      CapacityType: ON_DEMAND
+      InstanceTypes:
+        - !Ref NodeInstanceType
+      LaunchTemplate:
+        Id: !Ref NodeLaunchTemplate
+        Version: !GetAtt NodeLaunchTemplate.LatestVersionNumber
+      Subnets:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+      ScalingConfig:
+        MinSize: !Ref NodeMinSize
+        DesiredSize: !Ref NodeDesiredSize
+        MaxSize: !Ref NodeMaxSize
+      UpdateConfig:
+        MaxUnavailable: 1
+      # Tag keys cannot contain parameters, so the cluster-specific autoscaler tag
+      # (k8s.io/cluster-autoscaler/<cluster> = owned) is in the launch template tags above; EKS also puts both
+      # autoscaler tags on the Auto Scaling group of a managed node group.
+      Tags:
+        k8s.io/cluster-autoscaler/enabled: "true"
+        team-owner: !Ref TagTeamOwner
+        project-name: !Ref TagProjectName
+        app-name: !Ref TagAppName
+        repo-name: !Ref TagRepoName
+        env-type: !Ref EnvType
+
+  # ---------------------------------------------------------
+  # Add-ons that need nodes
+  # ---------------------------------------------------------
+  CoreDnsAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: coredns
+      AddonVersion: !Ref CoreDnsVersion
+      ResolveConflicts: OVERWRITE
+
+  MetricsServerAddon:
+    Type: AWS::EKS::Addon
+    DependsOn: NodeGroup
+    Properties:
+      ClusterName: !Ref Cluster
+      AddonName: metrics-server
+      AddonVersion: !Ref MetricsServerVersion
+      ResolveConflicts: OVERWRITE
+
+  # ---------------------------------------------------------
+  # Pod identity: AWS Load Balancer Controller (reference policy v3.6.0, identical to v3.5.0)
+  # ---------------------------------------------------------
+  LbcRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-lbc-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  # Source: kubernetes-sigs/aws-load-balancer-controller, tag v3.6.0, docs/install/iam_policy.json (unchanged
+  # from v3.5.0). The tag conditions (elbv2.k8s.aws/cluster) are the ones of the reference policy.
+  LbcRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-lbc-${EnvType}"
+      RoleName: !Ref LbcRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: "Lbc00"
+            Effect: "Allow"
+            Action:
+              - "iam:CreateServiceLinkedRole"
+            Resource: "*"
+            Condition:
+              StringEquals:
+                iam:AWSServiceName: "elasticloadbalancing.amazonaws.com"
+          - Sid: "Lbc01"
+            Effect: "Allow"
+            Action:
+              - "ec2:DescribeAccountAttributes"
+              - "ec2:DescribeAddresses"
+              - "ec2:DescribeAvailabilityZones"
+              - "ec2:DescribeInternetGateways"
+              - "ec2:DescribeVpcs"
+              - "ec2:DescribeVpcPeeringConnections"
+              - "ec2:DescribeSubnets"
+              - "ec2:DescribeSecurityGroups"
+              - "ec2:DescribeInstances"
+              - "ec2:DescribeNetworkInterfaces"
+              - "ec2:DescribeTags"
+              - "ec2:GetCoipPoolUsage"
+              - "ec2:DescribeCoipPools"
+              - "ec2:GetSecurityGroupsForVpc"
+              - "ec2:DescribeIpamPools"
+              - "ec2:DescribeRouteTables"
+              - "elasticloadbalancing:DescribeLoadBalancers"
+              - "elasticloadbalancing:DescribeLoadBalancerAttributes"
+              - "elasticloadbalancing:DescribeListeners"
+              - "elasticloadbalancing:DescribeListenerCertificates"
+              - "elasticloadbalancing:DescribeSSLPolicies"
+              - "elasticloadbalancing:DescribeRules"
+              - "elasticloadbalancing:DescribeTargetGroups"
+              - "elasticloadbalancing:DescribeTargetGroupAttributes"
+              - "elasticloadbalancing:DescribeTargetHealth"
+              - "elasticloadbalancing:DescribeTags"
+              - "elasticloadbalancing:DescribeTrustStores"
+              - "elasticloadbalancing:DescribeListenerAttributes"
+              - "elasticloadbalancing:DescribeCapacityReservation"
+            Resource: "*"
+          - Sid: "Lbc02"
+            Effect: "Allow"
+            Action:
+              - "cognito-idp:DescribeUserPoolClient"
+              - "acm:ListCertificates"
+              - "acm:DescribeCertificate"
+              - "iam:ListServerCertificates"
+              - "iam:GetServerCertificate"
+              - "waf-regional:GetWebACL"
+              - "waf-regional:GetWebACLForResource"
+              - "waf-regional:AssociateWebACL"
+              - "waf-regional:DisassociateWebACL"
+              - "wafv2:GetWebACL"
+              - "wafv2:GetWebACLForResource"
+              - "wafv2:AssociateWebACL"
+              - "wafv2:DisassociateWebACL"
+              - "shield:GetSubscriptionState"
+              - "shield:DescribeProtection"
+              - "shield:CreateProtection"
+              - "shield:DeleteProtection"
+            Resource: "*"
+          - Sid: "Lbc03"
+            Effect: "Allow"
+            Action:
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+            Resource: "*"
+          - Sid: "Lbc04"
+            Effect: "Allow"
+            Action:
+              - "ec2:CreateSecurityGroup"
+            Resource: "*"
+          - Sid: "Lbc05"
+            Effect: "Allow"
+            Action:
+              - "ec2:CreateTags"
+            Resource: !Sub "arn:${AWS::Partition}:ec2:*:*:security-group/*"
+            Condition:
+              StringEquals:
+                ec2:CreateAction: "CreateSecurityGroup"
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc06"
+            Effect: "Allow"
+            Action:
+              - "ec2:CreateTags"
+              - "ec2:DeleteTags"
+            Resource: !Sub "arn:${AWS::Partition}:ec2:*:*:security-group/*"
+            Condition:
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "true"
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc07"
+            Effect: "Allow"
+            Action:
+              - "ec2:AuthorizeSecurityGroupIngress"
+              - "ec2:RevokeSecurityGroupIngress"
+              - "ec2:DeleteSecurityGroup"
+            Resource: "*"
+            Condition:
+              "Null":
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc08"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:CreateLoadBalancer"
+              - "elasticloadbalancing:CreateTargetGroup"
+            Resource: "*"
+            Condition:
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc09"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:CreateListener"
+              - "elasticloadbalancing:DeleteListener"
+              - "elasticloadbalancing:CreateRule"
+              - "elasticloadbalancing:DeleteRule"
+            Resource: "*"
+          - Sid: "Lbc10"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:AddTags"
+              - "elasticloadbalancing:RemoveTags"
+            Resource:
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:targetgroup/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:loadbalancer/net/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:loadbalancer/app/*/*"
+            Condition:
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "true"
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc11"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:AddTags"
+              - "elasticloadbalancing:RemoveTags"
+            Resource:
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:listener/net/*/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:listener/app/*/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:listener-rule/net/*/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:listener-rule/app/*/*/*"
+          - Sid: "Lbc12"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:ModifyLoadBalancerAttributes"
+              - "elasticloadbalancing:SetIpAddressType"
+              - "elasticloadbalancing:SetSecurityGroups"
+              - "elasticloadbalancing:SetSubnets"
+              - "elasticloadbalancing:DeleteLoadBalancer"
+              - "elasticloadbalancing:ModifyTargetGroup"
+              - "elasticloadbalancing:ModifyTargetGroupAttributes"
+              - "elasticloadbalancing:DeleteTargetGroup"
+              - "elasticloadbalancing:ModifyListenerAttributes"
+              - "elasticloadbalancing:ModifyCapacityReservation"
+              - "elasticloadbalancing:ModifyIpPools"
+            Resource: "*"
+            Condition:
+              "Null":
+                aws:ResourceTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc13"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:AddTags"
+            Resource:
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:targetgroup/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:loadbalancer/net/*/*"
+              - !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:loadbalancer/app/*/*"
+            Condition:
+              StringEquals:
+                elasticloadbalancing:CreateAction:
+                  - "CreateTargetGroup"
+                  - "CreateLoadBalancer"
+              "Null":
+                aws:RequestTag/elbv2.k8s.aws/cluster: "false"
+          - Sid: "Lbc14"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:RegisterTargets"
+              - "elasticloadbalancing:DeregisterTargets"
+            Resource: !Sub "arn:${AWS::Partition}:elasticloadbalancing:*:*:targetgroup/*/*"
+          - Sid: "Lbc15"
+            Effect: "Allow"
+            Action:
+              - "elasticloadbalancing:SetWebAcl"
+              - "elasticloadbalancing:ModifyListener"
+              - "elasticloadbalancing:AddListenerCertificates"
+              - "elasticloadbalancing:RemoveListenerCertificates"
+              - "elasticloadbalancing:ModifyRule"
+              - "elasticloadbalancing:SetRulePriorities"
+            Resource: "*"
+
+  LbcAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: kube-system
+      ServiceAccount: aws-load-balancer-controller
+      RoleArn: !GetAtt LbcRole.Arn
+
+  # ---------------------------------------------------------
+  # Pod identity: Cluster Autoscaler (Auto Scaling writes only on the group of this cluster, by tag)
+  # ---------------------------------------------------------
+  AutoscalerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-autoscaler-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  AutoscalerReadPolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-autoscaler-read-${EnvType}"
+      RoleName: !Ref AutoscalerRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          # The Describe actions do not support resource-level permissions.
+          - Sid: DescribeGroupsAndInstanceTypes
+            Effect: Allow
+            Action:
+              - autoscaling:DescribeAutoScalingGroups
+              - autoscaling:DescribeAutoScalingInstances
+              - autoscaling:DescribeLaunchConfigurations
+              - autoscaling:DescribeScalingActivities
+              - autoscaling:DescribeTags
+              - ec2:DescribeImages
+              - ec2:DescribeInstanceTypes
+              - ec2:DescribeLaunchTemplateVersions
+              - ec2:GetInstanceTypesFromInstanceRequirements
+            Resource: "*"
+          - Sid: DescribeTheNodeGroup
+            Effect: Allow
+            Action: eks:DescribeNodegroup
+            Resource: !Sub "arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${Cluster}/eksng-${RegionCode}-${Context}-${EnvType}/*"
+
+  # The write actions are limited to Auto Scaling groups that carry both autoscaler tags. The tag key of the
+  # cluster contains the cluster name, which a map key cannot take from a parameter, so the document is a
+  # JSON string with substitution.
+  AutoscalerWritePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-autoscaler-write-${EnvType}"
+      RoleName: !Ref AutoscalerRole
+      PolicyDocument: !Sub
+        - |
+          {
+            "Version": "2012-10-17",
+            "Statement": [
+              {
+                "Sid": "ScaleTheTaggedGroupOnly",
+                "Effect": "Allow",
+                "Action": [
+                  "autoscaling:SetDesiredCapacity",
+                  "autoscaling:TerminateInstanceInAutoScalingGroup"
+                ],
+                "Resource": "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/*",
+                "Condition": {
+                  "StringEquals": {
+                    "aws:ResourceTag/k8s.io/cluster-autoscaler/enabled": "true",
+                    "aws:ResourceTag/k8s.io/cluster-autoscaler/${ClusterName}": "owned"
+                  }
+                }
+              }
+            ]
+          }
+        - ClusterName: !Ref Cluster
+
+  AutoscalerAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: kube-system
+      ServiceAccount: cluster-autoscaler
+      RoleArn: !GetAtt AutoscalerRole.Arn
+
+  # ---------------------------------------------------------
+  # Pod identity: the calculator workloads (calc = add, sub, mul, div; history) read only the application secret
+  # and publish to the alerts topic. The ingest role belongs to the storage stack.
+  # ---------------------------------------------------------
+  CalcRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-calc-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  CalcRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-calc-${EnvType}"
+      RoleName: !Ref CalcRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadTheApplicationSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+          - Sid: DecryptTheSecretThroughSecretsManager
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+          - Sid: PublishToTheAlertsTopic
+            Effect: Allow
+            Action: sns:Publish
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          - Sid: UseTheDataKeyThroughSns
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "sns.${AWS::Region}.amazonaws.com"
+
+  CalcAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: calculator
+      ServiceAccount: calc
+      RoleArn: !GetAtt CalcRole.Arn
+
+  HistoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-history-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  HistoryRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-history-${EnvType}"
+      RoleName: !Ref HistoryRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadTheApplicationSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+          - Sid: DecryptTheSecretThroughSecretsManager
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+          - Sid: PublishToTheAlertsTopic
+            Effect: Allow
+            Action: sns:Publish
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          - Sid: UseTheDataKeyThroughSns
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "sns.${AWS::Region}.amazonaws.com"
+
+  HistoryAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: calculator
+      ServiceAccount: history
+      RoleArn: !GetAtt HistoryRole.Arn
+
+  # ---------------------------------------------------------
+  # Pod identity: migration job (the only workload that reads the master secret)
+  # ---------------------------------------------------------
+  MigrateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-migrate-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  MigrateRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-migrate-${EnvType}"
+      RoleName: !Ref MigrateRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadTheMasterSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:MasterSecretArn"
+          - Sid: DecryptTheSecretThroughSecretsManager
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+
+  MigrateAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName: !Ref Cluster
+      Namespace: calculator
+      ServiceAccount: migrate
+      RoleArn: !GetAtt MigrateRole.Arn
+
+Outputs:
+  ClusterName:
+    Value: !Ref Cluster
+    Export:
+      Name: !Sub "${AWS::StackName}:ClusterName"
+  ClusterArn:
+    Value: !GetAtt Cluster.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:ClusterArn"
+  ClusterSecurityGroupId:
+    Description: Security group created by EKS for the control plane (the build and the bastion get ingress on 443 from their own stacks)
+    Value: !GetAtt Cluster.ClusterSecurityGroupId
+    Export:
+      Name: !Sub "${AWS::StackName}:ClusterSecurityGroupId"
+  ClusterEndpoint:
+    Description: Private API endpoint of the cluster
+    Value: !GetAtt Cluster.Endpoint
+    Export:
+      Name: !Sub "${AWS::StackName}:ClusterEndpoint"
+  ClusterCertificateAuthorityData:
+    Description: Base64 certificate authority of the cluster (public data, needed by kubeconfig)
+    Value: !GetAtt Cluster.CertificateAuthorityData
+    Export:
+      Name: !Sub "${AWS::StackName}:ClusterCertificateAuthorityData"
+  NodeRoleArn:
+    Value: !GetAtt NodeRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:NodeRoleArn"
+  NodeGroupName:
+    Value: !GetAtt NodeGroup.NodegroupName
+    Export:
+      Name: !Sub "${AWS::StackName}:NodeGroupName"
+  KubernetesVersion:
+    Value: !Ref KubernetesVersion
+    Export:
+      Name: !Sub "${AWS::StackName}:KubernetesVersion"
+  LbcRoleArn:
+    Value: !GetAtt LbcRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:LbcRoleArn"
+  AutoscalerRoleArn:
+    Value: !GetAtt AutoscalerRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:AutoscalerRoleArn"

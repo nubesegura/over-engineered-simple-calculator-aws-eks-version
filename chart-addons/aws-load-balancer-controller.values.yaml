@@ -1,0 +1,37 @@
+# Values of the AWS Load Balancer Controller chart (eks-charts, aws-load-balancer-controller 3.6.0, app v3.6.0).
+# Installed by scripts/helm_addons.sh, run by the deployment build project (task 3.7).
+#
+# Not in this file, passed by the script from the environment of the build (per cluster or per environment):
+#   clusterName, region, vpcId   from the cluster and network stacks. Region and VPC id are set explicitly
+#                                because the nodes allow the instance metadata service with hop limit 1, so
+#                                the controller pod cannot discover them.
+#   defaultTags                  the five mandatory tags (team-owner, project-name, app-name, repo-name,
+#                                env-type), so the load balancer, target groups and the security groups the
+#                                controller creates carry them (requirement 15.1).
+#   replicaCount                 2 when ENV_TYPE is prod (one here, for dev).
+
+replicaCount: 1
+
+# AWS credentials come from EKS Pod Identity (association created by the cluster stack for this service
+# account), so the service account carries no annotations.
+serviceAccount:
+  create: true
+  name: aws-load-balancer-controller
+  annotations: {}
+
+ingressClass: alb
+createIngressClassResource: true
+
+# The calculator exposes ClusterIP services only. Leaving the service mutator webhook on would make every
+# Service create or update fail while the controller is not running (its failure policy is Fail).
+enableServiceMutatorWebhook: false
+
+logLevel: info
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    cpu: 250m
+    memory: 256Mi

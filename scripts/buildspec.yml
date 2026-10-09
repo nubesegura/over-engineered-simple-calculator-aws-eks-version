@@ -1,0 +1,86 @@
+version: 0.2
+
+# Fixed buildspec of the deployment build project (design decision D12).
+#
+# templates/deploy.yaml embeds this file literally in Source.BuildSpec, so the project does not read a
+# buildspec from the source archive (scripts/tests/test_templates_m3_deploy.py fails if the two differ).
+#
+# What the workflow passes with StartBuild (never stored in the project):
+#   sourceLocationOverride        bucket/key of the source archive in the SAM artifact bucket
+#   SOURCE_SHA256                 SHA-256 (64 hex characters) of that archive
+#   DEPLOY_COMMAND                one of: addons, deploy, uninstall
+# The project itself carries only non-secret values (cluster name, VPC id, tag values, ...).
+#
+# Order: validate the inputs, download the archive again, compare its SHA-256, extract the verified copy into
+# VERIFIED_DIR and run only files from there (the copy CodeBuild extracted by itself is never used, so the
+# object cannot be swapped between the download and the check), install pinned kubectl and helm, then run
+# the script mapped to DEPLOY_COMMAND.
+
+env:
+  shell: bash
+  variables:
+    VERIFIED_DIR: "/tmp/source-verified"
+    KUBECTL_VERSION: "v1.37.1"
+    KUBECTL_SHA256: "ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7"
+    HELM_VERSION: "v3.22.0"
+    HELM_SHA256: "f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310"
+
+phases:
+  install:
+    commands:
+      - |
+        set -euo pipefail
+        : "${DEPLOY_COMMAND:?DEPLOY_COMMAND is required (addons, deploy or uninstall)}"
+        : "${SOURCE_SHA256:?SOURCE_SHA256 is required (checksum of the source archive)}"
+        case "$DEPLOY_COMMAND" in
+          addons | deploy | uninstall) ;;
+          *) echo "DEPLOY_COMMAND must be addons, deploy or uninstall" >&2; exit 1 ;;
+        esac
+        if ! [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "SOURCE_SHA256 must be 64 lowercase hexadecimal characters" >&2
+          exit 1
+        fi
+        source_location="${CODEBUILD_SOURCE_REPO_URL:?CODEBUILD_SOURCE_REPO_URL is not set}"
+        source_location="${source_location#s3://}"
+        archive_dir="$(mktemp -d)"
+        aws s3 cp --only-show-errors "s3://${source_location}" "${archive_dir}/source.zip"
+        actual_sha256="$(sha256sum "${archive_dir}/source.zip" | cut -d ' ' -f 1)"
+        if [ "$actual_sha256" != "$SOURCE_SHA256" ]; then
+          echo "Source archive checksum mismatch (expected ${SOURCE_SHA256}, got ${actual_sha256}): refusing to run" >&2
+          exit 1
+        fi
+        rm -rf "$VERIFIED_DIR"
+        mkdir -p "$VERIFIED_DIR"
+        unzip -q "${archive_dir}/source.zip" -d "$VERIFIED_DIR"
+        echo "Source archive verified (${actual_sha256})"
+      - |
+        set -euo pipefail
+        tools_dir="$(mktemp -d)"
+        curl -fsSL -o "${tools_dir}/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/arm64/kubectl"
+        echo "${KUBECTL_SHA256}  ${tools_dir}/kubectl" | sha256sum -c -
+        install -m 0755 "${tools_dir}/kubectl" /usr/local/bin/kubectl
+        curl -fsSL -o "${tools_dir}/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz"
+        echo "${HELM_SHA256}  ${tools_dir}/helm.tgz" | sha256sum -c -
+        tar -xzf "${tools_dir}/helm.tgz" -C "$tools_dir" linux-arm64/helm
+        install -m 0755 "${tools_dir}/linux-arm64/helm" /usr/local/bin/helm
+        kubectl version --client
+        helm version --short
+  build:
+    commands:
+      - |
+        set -euo pipefail
+        case "$DEPLOY_COMMAND" in
+          addons) script="scripts/helm_addons.sh" ;;
+          deploy) script="scripts/helm_deploy.sh" ;;
+          uninstall) script="scripts/helm_uninstall.sh" ;;
+          *) echo "DEPLOY_COMMAND must be addons, deploy or uninstall" >&2; exit 1 ;;
+        esac
+        if [ ! -f "${VERIFIED_DIR}/${script}" ]; then
+          echo "${script} is not part of the verified source archive" >&2
+          exit 1
+        fi
+        export KUBECONFIG="${VERIFIED_DIR}.kubeconfig"
+        aws eks update-kubeconfig --name "${CLUSTER_NAME:?CLUSTER_NAME is not set}" \
+          --region "${AWS_REGION:-${AWS_DEFAULT_REGION:?AWS_REGION is not set}}" --kubeconfig "$KUBECONFIG"
+        cd "$VERIFIED_DIR"
+        bash "$script"

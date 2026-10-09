@@ -1,0 +1,479 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Deployment stack: the CodeBuild project that runs Helm and kubectl inside the VPC (the cluster endpoint is
+  private), its service role, encrypted log group, cluster access entry with the cluster admin policy, the
+  cluster security group rule for it and a rule that sends failed builds to the alerts topic.
+
+# How the pieces fit together (design decisions D5, D12, D15, D19):
+# - The GitHub workflow uploads the source archive (scripts and charts) to the SAM artifact bucket under
+#   <repo-name>/<env>/, then calls StartBuild on this project with sourceLocationOverride (bucket/key) and the
+#   environment variables SOURCE_SHA256 and DEPLOY_COMMAND (addons, deploy or uninstall). The Location in the
+#   project is a placeholder that every build overrides.
+# - The buildspec below is the literal content of scripts/buildspec.yml (a template test keeps them equal).
+#   It verifies the SHA-256 of the archive and refuses to run when it differs.
+# - GitHub deployment role: it needs codebuild:StartBuild and codebuild:BatchGetBuilds on the ProjectArn output.
+#   That role has PowerUserAccess, which already allows both, so no policy is added here. CodeBuild cannot
+#   forbid a caller with StartBuild from sending buildspecOverride or environment overrides; the only control
+#   is who holds codebuild:StartBuild (the deployment role and the key administrators), and CloudTrail records
+#   every StartBuild with its parameters.
+# - The service role cannot be assumed by GitHub: its trust policy names the CodeBuild service for this project.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  LogRetentionDays:
+    Type: Number
+    Description: Retention of the build log group in days
+  TagTeamOwner:
+    Type: String
+    Description: Value of the team-owner tag (passed to the build for the tags of controller-created resources)
+  TagProjectName:
+    Type: String
+    Description: Value of the project-name tag
+  TagAppName:
+    Type: String
+    Description: Value of the app-name tag
+  TagRepoName:
+    Type: String
+    Description: Value of the repo-name tag; also the first part of the key prefix of the source archives in the artifact bucket
+  SourceBucketNamePattern:
+    Type: String
+    Default: "aws-sam-cli-managed-default-samclisourcebucket-*"
+    Description: Name pattern of the SAM artifact bucket (resolve_s3 in samconfig.toml); the role reads only <TagRepoName>/<EnvType>/ inside it
+  AllowAutoscalerMinorSkew:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: >-
+      Owner decision. "true" lets scripts/helm_addons.sh install a Cluster Autoscaler whose minor version differs
+      from the cluster's (needed while no autoscaler release exists for the newest Kubernetes version).
+
+Resources:
+  # ---------------------------------------------------------
+  # Log group (the project writes here; created in this stack so it has the key and the retention)
+  # ---------------------------------------------------------
+  BuildLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/codebuild/cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  # ---------------------------------------------------------
+  # Service role of the build. The ECR repository policy already names it
+  # (iamr-<region>-<context>-eks-deploy-<env>), so the name must not change.
+  # ---------------------------------------------------------
+  DeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codebuild.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      Policies:
+        - PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: WriteBuildLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                Resource: !GetAtt BuildLogGroup.Arn
+              # Only the source archives of this repository and environment; the bucket is the SAM one.
+              - Sid: ReadSourceArchive
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${SourceBucketNamePattern}/${TagRepoName}/${EnvType}/*"
+              - Sid: LocateSourceBucket
+                Effect: Allow
+                Action: s3:GetBucketLocation
+                Resource: !Sub "arn:${AWS::Partition}:s3:::${SourceBucketNamePattern}"
+              - Sid: DescribeTheCluster
+                Effect: Allow
+                Action: eks:DescribeCluster
+                Resource:
+                  Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterArn"
+              # Pull only: no ecr:Put*, no ecr:InitiateLayerUpload. The images are pushed by the pipeline role.
+              - Sid: EcrLogin
+                Effect: Allow
+                Action: ecr:GetAuthorizationToken
+                Resource: "*"
+              - Sid: EcrPullOfThisRepository
+                Effect: Allow
+                Action:
+                  - ecr:BatchCheckLayerAvailability
+                  - ecr:BatchGetImage
+                  - ecr:GetDownloadUrlForLayer
+                  - ecr:DescribeImages
+                Resource:
+                  Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-registry-${EnvType}:RepositoryArn"
+              # D19: only this role writes the load balancer registration of this backend (dns-name, hosted-zone-id).
+              - Sid: PublishBackendRegistration
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameter
+                  - ssm:AddTagsToResource
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Context}/${EnvType}/api-backends/eks/*"
+              - Sid: ReadSharedCertificateParameter
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Context}/${EnvType}/api-certificate-arn"
+              # Read-only lookups of the load balancer the Ingress creates (waiting for it, destroy checks).
+              - Sid: DescribeLoadBalancers
+                Effect: Allow
+                Action:
+                  - elasticloadbalancing:DescribeLoadBalancers
+                  - elasticloadbalancing:DescribeTargetGroups
+                  - elasticloadbalancing:DescribeTargetHealth
+                  - elasticloadbalancing:DescribeListeners
+                  - elasticloadbalancing:DescribeTags
+                Resource: "*"
+              # The key encrypts the project (kms:ResourceAliases, never the key ARN). The service name list
+              # covers the calls CodeBuild and S3 make with this role; only a real build confirms the exact one.
+              - Sid: UseTheDataKeyByAlias
+                Effect: Allow
+                Action:
+                  - kms:Decrypt
+                  - kms:Encrypt
+                  - kms:GenerateDataKey
+                  - kms:DescribeKey
+                Resource: "*"
+                Condition:
+                  ForAnyValue:StringEquals:
+                    kms:ResourceAliases:
+                      - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+                  StringEquals:
+                    kms:ViaService:
+                      - !Sub "codebuild.${AWS::Region}.amazonaws.com"
+                      - !Sub "s3.${AWS::Region}.amazonaws.com"
+              # CodeBuild in a VPC: the network interface actions are called while the build starts.
+              - Sid: VpcNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DeleteNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DescribeDhcpOptions
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeVpcs
+                Resource: "*"
+              - Sid: AttachNetworkInterfacesInThePrivateSubnets
+                Effect: Allow
+                Action: ec2:CreateNetworkInterfacePermission
+                Resource: !Sub "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:network-interface/*"
+                Condition:
+                  StringEquals:
+                    ec2:AuthorizedService: codebuild.amazonaws.com
+                    ec2:Subnet:
+                      - !Sub
+                        - "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${SubnetId}"
+                        - SubnetId:
+                            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+                      - !Sub
+                        - "arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:subnet/${SubnetId}"
+                        - SubnetId:
+                            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+
+  # ---------------------------------------------------------
+  # Build project. No webhook, no artifacts, not privileged (no Docker daemon: images are built by the
+  # pipeline). The buildspec is fixed here; nothing in the source archive can replace it.
+  # ---------------------------------------------------------
+  DeployProject:
+    Type: AWS::CodeBuild::Project
+    Properties:
+      Name: !Sub "cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      Description: !Sub "Runs helm and kubectl inside the VPC for ${Context} eks (${EnvType})"
+      ServiceRole: !GetAtt DeployRole.Arn
+      EncryptionKey:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      TimeoutInMinutes: 30
+      QueuedTimeoutInMinutes: 30
+      ConcurrentBuildLimit: 1 # one Helm operation at a time
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: ARM_CONTAINER
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/amazonlinux-aarch64-standard:4.0-26.05.06 # managed image, pinned to a release
+        ImagePullCredentialsType: CODEBUILD
+        PrivilegedMode: false # CB-05: no Docker daemon needed
+        EnvironmentVariables:
+          - { Name: ENV_TYPE, Type: PLAINTEXT, Value: !Ref EnvType }
+          - { Name: CONTEXT, Type: PLAINTEXT, Value: !Ref Context }
+          - { Name: REGION_CODE, Type: PLAINTEXT, Value: !Ref RegionCode }
+          - Name: CLUSTER_NAME
+            Type: PLAINTEXT
+            Value:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
+          - Name: KUBERNETES_VERSION
+            Type: PLAINTEXT
+            Value:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:KubernetesVersion"
+          - Name: VPC_ID
+            Type: PLAINTEXT
+            Value:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:VpcId"
+          - Name: REPOSITORY_URI
+            Type: PLAINTEXT
+            Value:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-registry-${EnvType}:RepositoryUri"
+          - { Name: TAG_TEAM_OWNER, Type: PLAINTEXT, Value: !Ref TagTeamOwner }
+          - { Name: TAG_PROJECT_NAME, Type: PLAINTEXT, Value: !Ref TagProjectName }
+          - { Name: TAG_APP_NAME, Type: PLAINTEXT, Value: !Ref TagAppName }
+          - { Name: TAG_REPO_NAME, Type: PLAINTEXT, Value: !Ref TagRepoName }
+          - { Name: ALLOW_AUTOSCALER_MINOR_SKEW, Type: PLAINTEXT, Value: !Ref AllowAutoscalerMinorSkew }
+      Source:
+        Type: S3
+        # Placeholder: every build passes sourceLocationOverride with the real bucket and key.
+        Location: !Sub "source-bucket-set-at-start-build/${TagRepoName}/${EnvType}/source.zip"
+        BuildSpec: |
+          version: 0.2
+
+          # Fixed buildspec of the deployment build project (design decision D12).
+          #
+          # templates/deploy.yaml embeds this file literally in Source.BuildSpec, so the project does not read a
+          # buildspec from the source archive (scripts/tests/test_templates_m3_deploy.py fails if the two differ).
+          #
+          # What the workflow passes with StartBuild (never stored in the project):
+          #   sourceLocationOverride        bucket/key of the source archive in the SAM artifact bucket
+          #   SOURCE_SHA256                 SHA-256 (64 hex characters) of that archive
+          #   DEPLOY_COMMAND                one of: addons, deploy, uninstall
+          # The project itself carries only non-secret values (cluster name, VPC id, tag values, ...).
+          #
+          # Order: validate the inputs, download the archive again, compare its SHA-256, extract the verified copy into
+          # VERIFIED_DIR and run only files from there (the copy CodeBuild extracted by itself is never used, so the
+          # object cannot be swapped between the download and the check), install pinned kubectl and helm, then run
+          # the script mapped to DEPLOY_COMMAND.
+
+          env:
+            shell: bash
+            variables:
+              VERIFIED_DIR: "/tmp/source-verified"
+              KUBECTL_VERSION: "v1.37.1"
+              KUBECTL_SHA256: "ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7"
+              HELM_VERSION: "v3.22.0"
+              HELM_SHA256: "f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310"
+
+          phases:
+            install:
+              commands:
+                - |
+                  set -euo pipefail
+                  : "${DEPLOY_COMMAND:?DEPLOY_COMMAND is required (addons, deploy or uninstall)}"
+                  : "${SOURCE_SHA256:?SOURCE_SHA256 is required (checksum of the source archive)}"
+                  case "$DEPLOY_COMMAND" in
+                    addons | deploy | uninstall) ;;
+                    *) echo "DEPLOY_COMMAND must be addons, deploy or uninstall" >&2; exit 1 ;;
+                  esac
+                  if ! [[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]]; then
+                    echo "SOURCE_SHA256 must be 64 lowercase hexadecimal characters" >&2
+                    exit 1
+                  fi
+                  source_location="${CODEBUILD_SOURCE_REPO_URL:?CODEBUILD_SOURCE_REPO_URL is not set}"
+                  source_location="${source_location#s3://}"
+                  archive_dir="$(mktemp -d)"
+                  aws s3 cp --only-show-errors "s3://${source_location}" "${archive_dir}/source.zip"
+                  actual_sha256="$(sha256sum "${archive_dir}/source.zip" | cut -d ' ' -f 1)"
+                  if [ "$actual_sha256" != "$SOURCE_SHA256" ]; then
+                    echo "Source archive checksum mismatch (expected ${SOURCE_SHA256}, got ${actual_sha256}): refusing to run" >&2
+                    exit 1
+                  fi
+                  rm -rf "$VERIFIED_DIR"
+                  mkdir -p "$VERIFIED_DIR"
+                  unzip -q "${archive_dir}/source.zip" -d "$VERIFIED_DIR"
+                  echo "Source archive verified (${actual_sha256})"
+                - |
+                  set -euo pipefail
+                  tools_dir="$(mktemp -d)"
+                  curl -fsSL -o "${tools_dir}/kubectl" "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/arm64/kubectl"
+                  echo "${KUBECTL_SHA256}  ${tools_dir}/kubectl" | sha256sum -c -
+                  install -m 0755 "${tools_dir}/kubectl" /usr/local/bin/kubectl
+                  curl -fsSL -o "${tools_dir}/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-arm64.tar.gz"
+                  echo "${HELM_SHA256}  ${tools_dir}/helm.tgz" | sha256sum -c -
+                  tar -xzf "${tools_dir}/helm.tgz" -C "$tools_dir" linux-arm64/helm
+                  install -m 0755 "${tools_dir}/linux-arm64/helm" /usr/local/bin/helm
+                  kubectl version --client
+                  helm version --short
+            build:
+              commands:
+                - |
+                  set -euo pipefail
+                  case "$DEPLOY_COMMAND" in
+                    addons) script="scripts/helm_addons.sh" ;;
+                    deploy) script="scripts/helm_deploy.sh" ;;
+                    uninstall) script="scripts/helm_uninstall.sh" ;;
+                    *) echo "DEPLOY_COMMAND must be addons, deploy or uninstall" >&2; exit 1 ;;
+                  esac
+                  if [ ! -f "${VERIFIED_DIR}/${script}" ]; then
+                    echo "${script} is not part of the verified source archive" >&2
+                    exit 1
+                  fi
+                  export KUBECONFIG="${VERIFIED_DIR}.kubeconfig"
+                  aws eks update-kubeconfig --name "${CLUSTER_NAME:?CLUSTER_NAME is not set}" \
+                    --region "${AWS_REGION:-${AWS_DEFAULT_REGION:?AWS_REGION is not set}}" --kubeconfig "$KUBECONFIG"
+                  cd "$VERIFIED_DIR"
+                  bash "$script"
+      VpcConfig:
+        VpcId:
+          Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:VpcId"
+        Subnets:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetB"
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:CodeBuildSecurityGroupId"
+      LogsConfig: # CB-01
+        CloudWatchLogs:
+          Status: ENABLED
+          GroupName: !Ref BuildLogGroup
+      Tags:
+        - Key: Name
+          Value: !Sub "cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+
+  # ---------------------------------------------------------
+  # Cluster access (requirement 8.4): the only administrator entry; nothing else uses it.
+  # ---------------------------------------------------------
+  DeployAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
+      PrincipalArn: !GetAtt DeployRole.Arn
+      Type: STANDARD
+      AccessPolicies:
+        - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSClusterAdminPolicy"
+          AccessScope:
+            Type: cluster
+
+  # The cluster endpoint is private: the build reaches it on 443 through the cluster security group.
+  ClusterFromBuildIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterSecurityGroupId"
+      Description: Cluster API from the deployment build
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:CodeBuildSecurityGroupId"
+
+  # ---------------------------------------------------------
+  # Failed builds go to the alerts topic (the topic policy and the key policy allow EventBridge rules)
+  # ---------------------------------------------------------
+  # Events that could not be delivered to the topic (EVB-01). Encrypted with the data key by alias; the key policy
+  # lets EventBridge use it.
+  AlertsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "sqs-${RegionCode}-${Context}-eks-deploy-events-dlq-${EnvType}"
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20 # SQS-04
+
+  AlertsDeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref AlertsDeadLetterQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OnlyThisRuleSendsFailedEvents
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt AlertsDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt BuildFailedRule.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt AlertsDeadLetterQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  BuildFailedRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "evr-${RegionCode}-${Context}-eks-deploy-failed-${EnvType}"
+      Description: A deployment build failed, timed out or crashed
+      State: ENABLED
+      EventPattern:
+        source: [aws.codebuild]
+        detail-type: [CodeBuild Build State Change]
+        detail:
+          build-status: [FAILED, FAULT, TIMED_OUT]
+          project-name: [!Ref DeployProject]
+      Targets:
+        - Id: AlertsTopic
+          Arn:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          RetryPolicy: # EVB-02
+            MaximumRetryAttempts: 8
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig: # EVB-01
+            Arn: !GetAtt AlertsDeadLetterQueue.Arn
+          InputTransformer:
+            InputPathsMap:
+              project: $.detail.project-name
+              status: $.detail.build-status
+              build: $.detail.build-id
+            InputTemplate: '"Deployment build <project> ended with <status>: <build>"'
+
+Outputs:
+  ProjectName:
+    Description: CodeBuild project the workflow starts (StartBuild)
+    Value: !Ref DeployProject
+    Export:
+      Name: !Sub "${AWS::StackName}:ProjectName"
+  ProjectArn:
+    Description: >-
+      Project ARN. The GitHub deployment role needs codebuild:StartBuild and codebuild:BatchGetBuilds on it; the
+      role has PowerUserAccess, so nothing more is needed.
+    Value: !GetAtt DeployProject.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:ProjectArn"
+  DeployRoleArn:
+    Description: Service role of the build (cluster administrator through its access entry)
+    Value: !GetAtt DeployRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:DeployRoleArn"
+  BuildLogGroupName:
+    Description: Log group of the builds
+    Value: !Ref BuildLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:BuildLogGroupName"

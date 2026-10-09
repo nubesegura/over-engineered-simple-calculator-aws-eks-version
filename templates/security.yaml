@@ -26,11 +26,22 @@ Parameters:
     Type: String
     MinLength: 1
     Description: Name (not ARN) of the existing IAM role that administers the keys (KMS-06); it gets no data-plane action
+  AutoScalingServiceLinkedRoleExists:
+    Type: String
+    AllowedValues: ["true", "false"]
+    Description: >-
+      true when the Auto Scaling service-linked role exists in the account (it does in dev). A key policy that names
+      a missing role is rejected, so in prod run `aws iam create-service-linked-role --aws-service-name
+      autoscaling.amazonaws.com` first and then set this to true. While false, no node group can launch nodes with
+      volumes encrypted by the data key.
   SupportEmail:
     Type: String
     NoEcho: true
     MinLength: 3
     Description: Address that receives the alerts (GitHub secret SUPPORT_EMAIL; the owner confirms the subscription by hand)
+
+Conditions:
+  GrantAutoScalingRole: !Equals [!Ref AutoScalingServiceLinkedRoleExists, "true"]
 
 Resources:
   # ---------------------------------------------------------
@@ -118,6 +129,41 @@ Resources:
                 aws:SourceAccount: !Ref AWS::AccountId
               ArnEquals:
                 aws:SourceArn: !Sub "arn:${AWS::Partition}:s3:::bckt-${RegionCode}-${Context}-eks-ingest-${AWS::AccountId}-${EnvType}"
+          # Encrypted node volumes: Auto Scaling launches the nodes with its service-linked role, whose managed policy
+          # has no KMS action, so the key policy names it. Update of an existing key policy only (no replacement).
+          - !If
+            - GrantAutoScalingRole
+            - Sid: AutoScalingNodeVolumes
+              Effect: Allow
+              Principal:
+                AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+              Action:
+                - kms:Encrypt
+                - kms:Decrypt
+                - kms:ReEncrypt*
+                - kms:GenerateDataKey*
+                - kms:DescribeKey
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:CallerAccount: !Ref AWS::AccountId
+                  kms:ViaService: !Sub "ec2.${AWS::Region}.amazonaws.com"
+            - !Ref AWS::NoValue
+          - !If
+            - GrantAutoScalingRole
+            - Sid: AutoScalingNodeVolumeGrants
+              Effect: Allow
+              Principal:
+                AWS: !Sub "arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+              Action: kms:CreateGrant
+              Resource: "*"
+              Condition:
+                StringEquals:
+                  kms:CallerAccount: !Ref AWS::AccountId
+                  kms:ViaService: !Sub "ec2.${AWS::Region}.amazonaws.com"
+                Bool:
+                  kms:GrantIsForAWSResource: "true"
+            - !Ref AWS::NoValue
       Tags:
         - Key: Name
           Value: !Sub "kms-${RegionCode}-${Context}-eks-${EnvType}"

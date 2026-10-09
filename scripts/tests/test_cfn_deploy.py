@@ -438,6 +438,25 @@ def test_deploy_runs_an_allowlisted_replacement(repo: Path, cli: FakeCli) -> Non
     assert deploy.main(["deploy", "--env", "dev", "--allow-replacement", "AWS::SNS::Topic"]) == 0
 
 
+def test_per_unit_allowlist_applies_only_to_that_unit(repo: Path, cli: FakeCli) -> None:
+    world = World(cli)
+    world.change_set = {"Status": "CREATE_COMPLETE", "Changes": [change("Modify", "AWS::EC2::Instance", "True")]}
+    bastion = {**deploy.find_entry("dev", "bastion"), "allowReplacement": ["AWS::EC2::Instance"]}
+    deploy.deploy_stack("dev", bastion, "1", "1", frozenset())  # allowed for the bastion
+    assert len(cli.called("cloudformation execute-change-set")) == 1
+    with pytest.raises(deploy.DeployError, match="guard refused"):
+        deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
+    assert len(cli.called("cloudformation execute-change-set")) == 1
+
+
+def test_stacks_file_allows_only_the_bastion_instance_replacement() -> None:
+    data = json.loads((REPO / "templates" / "stacks.json").read_text(encoding="utf-8"))
+    for entries in data["environments"].values():
+        allowed = {e["unit"]: e["allowReplacement"] for e in entries if "allowReplacement" in e}
+        assert allowed == {"bastion": ["AWS::EC2::Instance"]}
+    assert not deploy.REPLACEMENT_ALLOWED_TYPES
+
+
 @pytest.mark.parametrize("status", ["ROLLBACK_COMPLETE", "DELETE_FAILED", "UPDATE_IN_PROGRESS"])
 def test_deploy_refuses_a_stack_in_a_bad_state(repo: Path, cli: FakeCli, status: str) -> None:
     World(cli, {"stk-useast2-oecalc-eks-security-dev": status})

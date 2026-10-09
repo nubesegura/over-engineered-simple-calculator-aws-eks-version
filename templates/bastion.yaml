@@ -1,0 +1,286 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Bastion stack (deployed only when EnableBastion is true): one small arm64 instance in a private subnet,
+  reached only with Session Manager, with kubectl, helm and the AWS CLI configured for the cluster and a
+  read-only EKS access entry. Sessions are logged to an encrypted log group.
+
+# Notes for the operator
+# - Start a session with the preferences document of this stack so that it is logged (see the Outputs):
+#   aws ssm start-session --target <instance id> --document-name <SessionDocumentName>
+#   The account-wide default document (SSM-SessionManagerRunShell) is not touched.
+# - The user data runs once, at the first boot. It downloads kubectl, helm and the AWS CLI through the NAT
+#   gateway, each at a pinned version and checked against a SHA-256 value written in this template (the
+#   values come from the publishers: dl.k8s.io, get.helm.sh and the downloaded AWS CLI archive of that version).
+#   When the NAT gateway is down at the first boot (22:00-08:00 Panama time in dev) the downloads fail: the
+#   log /var/log/oecalc-bastion-init.log says so and the instance has to be recreated (or the script re-run).
+#   To change a version, change the three pairs below together; the template test checks they match
+#   scripts/buildspec.yml for kubectl and helm.
+# - BastionImageId follows the latest Amazon Linux 2023 arm64 image at each deployment. A newer image makes
+#   CloudFormation replace the instance; the change set guard then stops the deployment and the owner decides.
+# - Write access: BastionWriteAccess "true" adds AmazonEKSEditPolicy in the namespace calculator only. That
+#   policy also reads and writes Secrets of that namespace. Default "false": read-only (AmazonEKSViewPolicy,
+#   which has no Secrets and includes pod logs). Nodes and node metrics come from the group calc-operator-readonly
+#   (chart-addons/operator-rbac.yaml), because the view policy does not include nodes.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  LogRetentionDays:
+    Type: Number
+    Description: Retention of the session log group in days
+  BastionWriteAccess:
+    Type: String
+    Default: "false"
+    AllowedValues: ["true", "false"]
+    Description: Deliberate change to give the bastion edit rights in the namespace calculator (default read-only)
+  BastionImageId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
+    Description: Amazon Linux 2023 arm64 image (public SSM parameter of AWS)
+
+Conditions:
+  IsProd: !Equals [!Ref EnvType, prod]
+  WriteAccess: !Equals [!Ref BastionWriteAccess, "true"]
+
+Resources:
+  # ---------------------------------------------------------
+  # Session Manager preferences and their encrypted log group
+  # ---------------------------------------------------------
+  SessionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub "/aws/ssm/session/${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
+  SessionDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: !Sub "ssmd-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      DocumentType: Session
+      DocumentFormat: JSON
+      UpdateMethod: NewVersion # a changed preference must not replace the document
+      Content:
+        schemaVersion: "1.0"
+        description: !Sub "Session preferences of the ${Context} eks bastion (${EnvType}): logged to an encrypted log group"
+        sessionType: Standard_Stream
+        inputs:
+          s3BucketName: ""
+          s3KeyPrefix: ""
+          s3EncryptionEnabled: true
+          cloudWatchLogGroupName: !Ref SessionLogGroup
+          cloudWatchEncryptionEnabled: true
+          cloudWatchStreamingEnabled: true
+          kmsKeyId: ""
+          runAsEnabled: false
+          runAsDefaultUser: ""
+          idleSessionTimeout: "20"
+          maxSessionDuration: "60"
+          shellProfile:
+            linux: "export KUBECONFIG=/etc/oecalc/kubeconfig"
+            windows: ""
+            macos: ""
+      Tags:
+        - Key: Name
+          Value: !Sub "ssmd-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+
+  # ---------------------------------------------------------
+  # Instance role and profile
+  # ---------------------------------------------------------
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub "arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore"
+      Policies:
+        - PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: DescribeTheCluster
+                Effect: Allow
+                Action: eks:DescribeCluster
+                Resource:
+                  Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterArn"
+              # The agent checks that the log group exists and is encrypted, then streams the session to it.
+              - Sid: CheckSessionLogGroup
+                Effect: Allow
+                Action: logs:DescribeLogGroups
+                Resource: "*"
+              - Sid: WriteSessionLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:DescribeLogStreams
+                  - logs:PutLogEvents
+                Resource: !GetAtt SessionLogGroup.Arn
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub "iamr-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      Roles:
+        - !Ref BastionRole
+
+  # ---------------------------------------------------------
+  # Instance: private subnet, no public IP, no key pair, no inbound rule (the security group has none)
+  # ---------------------------------------------------------
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref BastionImageId
+      InstanceType: t4g.nano
+      IamInstanceProfile: !Ref BastionInstanceProfile # EC2-14
+      DisableApiTermination: !If [IsProd, true, false] # EC2-13
+      PropagateTagsToVolumeOnCreation: true # EC2-15
+      Monitoring: false
+      NetworkInterfaces:
+        - DeviceIndex: "0"
+          AssociatePublicIpAddress: false # EC2-03
+          SubnetId:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateSubnetA"
+          GroupSet:
+            - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:BastionSecurityGroupId"
+      MetadataOptions: # EC2-01
+        HttpTokens: required
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3 # EC2-10
+            VolumeSize: 8
+            Encrypted: true # EC2-04
+            KmsKeyId:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+            DeleteOnTermination: true # EC2-12
+      Tags:
+        - Key: Name
+          Value: !Sub "ec2-${RegionCode}-${Context}-eks-bastion-${EnvType}"
+      UserData:
+        Fn::Base64: !Sub
+          - |
+            #!/bin/bash
+            # Installs kubectl, helm and the AWS CLI (arm64) at pinned versions with checksum verification and
+            # writes the kubeconfig of the cluster. Runs once at the first boot. Contains no credentials.
+            set -euo pipefail
+            exec > >(tee -a /var/log/oecalc-bastion-init.log) 2>&1
+
+            KUBECTL_VERSION=v1.37.1
+            KUBECTL_SHA256=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7
+            HELM_VERSION=v3.22.0
+            HELM_SHA256=f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310
+            AWSCLI_VERSION=2.37.11
+            AWSCLI_SHA256=759f4c75c832c171ce1401a956c5b6c9fe932c311e36786344641bd76adaf08a
+
+            work_dir="$(mktemp -d)"
+            cd "$work_dir"
+
+            # fetch URL FILE SHA256: download and refuse anything that does not match the pinned checksum
+            fetch() {
+              curl -fsSL --retry 5 --retry-delay 10 -o "$2" "$1"
+              echo "$3  $2" | sha256sum -c -
+            }
+
+            fetch "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/arm64/kubectl" kubectl "$KUBECTL_SHA256"
+            install -m 0755 kubectl /usr/local/bin/kubectl
+
+            fetch "https://get.helm.sh/helm-$HELM_VERSION-linux-arm64.tar.gz" helm.tgz "$HELM_SHA256"
+            tar -xzf helm.tgz linux-arm64/helm
+            install -m 0755 linux-arm64/helm /usr/local/bin/helm
+
+            fetch "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-$AWSCLI_VERSION.zip" awscli.zip "$AWSCLI_SHA256"
+            command -v unzip > /dev/null || dnf -y install unzip
+            unzip -q awscli.zip
+            ./aws/install --update
+
+            mkdir -p /etc/oecalc
+            export HOME=/root
+            /usr/local/bin/aws eks update-kubeconfig --name "${ClusterName}" --region "${AWS::Region}" --kubeconfig /etc/oecalc/kubeconfig
+            chmod 0644 /etc/oecalc/kubeconfig
+            cat > /etc/profile.d/oecalc-kubeconfig.sh <<'PROFILE'
+            export KUBECONFIG=/etc/oecalc/kubeconfig
+            export AWS_DEFAULT_REGION=${AWS::Region}
+            PROFILE
+            cd /
+            rm -rf "$work_dir"
+            echo "Bastion tools installed"
+          - ClusterName:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
+
+  # ---------------------------------------------------------
+  # Cluster access: read-only by default (requirement 10.2), edit in one namespace only by parameter
+  # ---------------------------------------------------------
+  BastionAccessEntry:
+    Type: AWS::EKS::AccessEntry
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
+      PrincipalArn: !GetAtt BastionRole.Arn
+      Type: STANDARD
+      KubernetesGroups:
+        - calc-operator-readonly # bound to nodes read-only in chart-addons/operator-rbac.yaml
+      AccessPolicies:
+        - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSViewPolicy"
+          AccessScope:
+            Type: cluster
+        - !If
+          - WriteAccess
+          - PolicyArn: !Sub "arn:${AWS::Partition}:eks::aws:cluster-access-policy/AmazonEKSEditPolicy"
+            AccessScope:
+              Type: namespace
+              Namespaces:
+                - calculator
+          - !Ref AWS::NoValue
+
+  ClusterFromBastionIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterSecurityGroupId"
+      Description: Cluster API from the bastion
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:BastionSecurityGroupId"
+
+Outputs:
+  BastionInstanceId:
+    Description: Instance to open a session on
+    Value: !Ref BastionInstance
+    Export:
+      Name: !Sub "${AWS::StackName}:BastionInstanceId"
+  SessionDocumentName:
+    Description: Session preferences document (use it with --document-name so the session is logged)
+    Value: !Ref SessionDocument
+    Export:
+      Name: !Sub "${AWS::StackName}:SessionDocumentName"
+  SessionLogGroupName:
+    Description: Encrypted log group of the sessions
+    Value: !Ref SessionLogGroup
+    Export:
+      Name: !Sub "${AWS::StackName}:SessionLogGroupName"
+  BastionRoleArn:
+    Description: Role of the bastion (read-only access entry)
+    Value: !GetAtt BastionRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:BastionRoleArn"

@@ -62,11 +62,11 @@ def test_stacks_list_has_the_agreed_order_and_names() -> None:
         "scheduler",
         "database",
         "rotation",
-        "storage",
         "cluster",
         "deploy",
     ]
-    order += ["bastion", "alarms"]
+    # storage is deployed after the cluster because it owns the ingestion pod identity association
+    order += ["bastion", "storage", "alarms"]
     for env, entries in stacks["environments"].items():
         assert [e["unit"] for e in entries] == order
         for entry in entries:

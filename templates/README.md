@@ -22,4 +22,5 @@ Stack names: `stk-<RegionCode>-<Context>-eks-<unit>-<EnvType>`. Data crosses sta
 - The VPC range is a parameter; ranges must not overlap the plan in `docs/architecture.md` D23 (`scripts/tests/test_cidr_plan.py`).
 - Key use is granted in IAM policies by alias (`kms:ResourceAliases` plus `kms:ViaService`), never by key ARN; no workload role gets alias management actions.
 - The ECR repository policy names the node role (`iamr-<region>-<context>-eks-node-<env>`) and the deployment build role (`iamr-<region>-<context>-eks-deploy-<env>`) in a condition; the cluster and deploy stacks must create roles with exactly those names.
+- Encrypted node volumes need the key policy to name the Auto Scaling service-linked role, which must exist (a key policy that names a missing role fails). `AutoScalingServiceLinkedRoleExists` is `true` in dev. In prod it is `false`: run `aws iam create-service-linked-role --aws-service-name autoscaling.amazonaws.com` once, then set it to `true` before deploying `cluster`.
 - Values the pipeline injects and that are not in the parameter files: `SupportEmail` (secret) and `WafAclArn` (prod, empty in the file).

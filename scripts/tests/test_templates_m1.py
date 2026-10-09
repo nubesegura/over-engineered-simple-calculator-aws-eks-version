@@ -29,7 +29,7 @@ FROZEN_SG_DESCRIPTIONS = {
 def load_cfn(name: str) -> dict[str, Any]:
     """Load a CloudFormation YAML file; intrinsic short forms become {"Fn::X": value} like in JSON."""
 
-    class Loader(yaml.SafeLoader):
+    class Loader(yaml.SafeLoader):  # type: ignore[misc]
         pass
 
     def construct(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> Any:
@@ -89,7 +89,7 @@ def test_key_policy_has_the_kms06_administration_statement(security: dict[str, A
         "kms:CancelKeyDeletion", "kms:TagResource", "kms:UntagResource", "kms:RetireGrant",
     }  # fmt: skip
     for key in resources_of(security, "AWS::KMS::Key").values():
-        statements = {s["Sid"]: s for s in key["Properties"]["KeyPolicy"]["Statement"]}
+        statements = {s["Sid"]: s for s in key["Properties"]["KeyPolicy"]["Statement"] if "Fn::If" not in s}
         admin = statements["KeyAdministration"]
         assert required <= set(admin["Action"])
         assert not any(a.startswith(("kms:Encrypt", "kms:Decrypt", "kms:GenerateDataKey")) for a in admin["Action"])
@@ -99,6 +99,8 @@ def test_key_policy_has_the_kms06_administration_statement(security: dict[str, A
 
 def documents(template: dict[str, Any]) -> list[dict[str, Any]]:
     docs = [k["Properties"]["KeyPolicy"] for k in resources_of(template, "AWS::KMS::Key").values()]
+    for doc in docs:  # a statement wrapped in Fn::If counts as the statement of its true branch
+        doc["Statement"] = [s["Fn::If"][1] if "Fn::If" in s else s for s in doc["Statement"]]
     docs += [t["Properties"]["PolicyDocument"] for t in resources_of(template, "AWS::SNS::TopicPolicy").values()]
     return docs
 

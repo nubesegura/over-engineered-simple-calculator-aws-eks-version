@@ -17,6 +17,9 @@ env:
   PYTHON_VERSION: "3.14"
   CFN_LINT_VERSION: "1.48.1"
   SAM_CLI_VERSION: "1.158.0"
+  HELM_VERSION: "v3.22.0"
+  # linux-amd64 (runner) archive; the build project pins the linux-arm64 one (f14e804d...) from the same release
+  HELM_AMD64_SHA256: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
 
 jobs:
   iac:
@@ -38,6 +41,20 @@ jobs:
         run: |
           python -m pip install --disable-pip-version-check -r scripts/requirements-dev.txt
           python -m pip install --disable-pip-version-check "cfn-lint==${CFN_LINT_VERSION}" "aws-sam-cli==${SAM_CLI_VERSION}"
+
+      - name: Install helm (pinned, checksum verified) and shellcheck
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_AMD64_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP" linux-amd64/helm
+          sudo install -m 0755 "$RUNNER_TEMP/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+          command -v shellcheck >/dev/null || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck --version
+
+      - name: Shellcheck (deployment scripts)
+        run: shellcheck scripts/*.sh
 
       - name: cfn-lint (every template)
         run: cfn-lint --regions us-east-2 -- templates/*.yaml
@@ -75,7 +92,7 @@ jobs:
         run: |
           ruff check --config src/scheduler/pyproject.toml src/scheduler scripts
           ruff format --config src/scheduler/pyproject.toml --check src/scheduler scripts
-          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/package_rotation.py
+          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/tests scripts/package_rotation.py
           (cd src/scheduler && mypy app.py)
 
   # PLACEHOLDER (task 4.1): Python core job (ruff, ruff format --check, mypy strict, lint-imports, pytest with
