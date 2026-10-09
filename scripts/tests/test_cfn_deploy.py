@@ -457,11 +457,53 @@ def test_stacks_file_allows_only_the_bastion_instance_replacement() -> None:
     assert not deploy.REPLACEMENT_ALLOWED_TYPES
 
 
-@pytest.mark.parametrize("status", ["ROLLBACK_COMPLETE", "DELETE_FAILED", "UPDATE_IN_PROGRESS"])
+@pytest.mark.parametrize(
+    "status",
+    ["ROLLBACK_FAILED", "DELETE_FAILED", "UPDATE_IN_PROGRESS", "CREATE_IN_PROGRESS",
+     "UPDATE_ROLLBACK_FAILED", "UPDATE_ROLLBACK_IN_PROGRESS"],
+)  # fmt: skip
 def test_deploy_refuses_a_stack_in_a_bad_state(repo: Path, cli: FakeCli, status: str) -> None:
     World(cli, {"stk-useast2-oecalc-eks-security-dev": status})
     with pytest.raises(deploy.DeployError, match=status):
         deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
+    assert not cli.called("cloudformation delete-stack")
+
+
+def test_rolled_back_stack_is_deleted_and_created_again(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stack = "stk-useast2-oecalc-eks-security-dev"
+    world = World(cli, {stack: "ROLLBACK_COMPLETE"})
+    cli.on(
+        "cloudformation describe-stack-events",
+        {
+            "StackEvents": [
+                {
+                    "LogicalResourceId": "Policy",
+                    "ResourceStatus": "CREATE_FAILED",
+                    "ResourceStatusReason": "bad document for 123456789012",
+                }
+            ]
+        },
+    )
+    deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
+    out = capsys.readouterr().out
+    assert "Policy CREATE_FAILED" in out and "123456789012" not in out
+    calls = [c[1:3] for c in cli.calls if c[0] == "aws" and c[1] == "cloudformation"]
+    assert calls.index(["cloudformation", "delete-stack"]) < calls.index(["cloudformation", "create-change-set"])
+    assert world.last_type == "CREATE"
+    assert world.statuses[stack] == "CREATE_COMPLETE"
+
+
+def test_rolled_back_stack_that_cannot_be_deleted_stops_with_the_events(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    stack = "stk-useast2-oecalc-eks-security-dev"
+    world = World(cli, {stack: "ROLLBACK_COMPLETE"})
+    world.delete_fails.add(stack)
+    with pytest.raises(deploy.DeployError, match="DELETE_FAILED"):
+        deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
+    assert not cli.called("cloudformation create-change-set")
 
 
 def test_wait_stack_reports_failed_events(repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]) -> None:

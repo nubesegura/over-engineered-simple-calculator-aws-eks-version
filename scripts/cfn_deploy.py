@@ -205,7 +205,8 @@ def print_failed_events(stack: str) -> None:
     )
     for event in (data or {}).get("StackEvents", []):
         if event.get("ResourceStatus", "").endswith("_FAILED"):
-            print(f"  {event['LogicalResourceId']} {event['ResourceStatus']}: {event.get('ResourceStatusReason', '')}")
+            line = f"  {event['LogicalResourceId']} {event['ResourceStatus']}: {event.get('ResourceStatusReason', '')}"
+            print(redact_account_ids(line))
 
 
 def wait_stack(stack: str, expected: tuple[str, ...]) -> None:
@@ -325,7 +326,17 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
     allowed = allowed | frozenset(entry.get("allowReplacement", []))  # per unit, e.g. the stateless bastion
     print(f"::group::{stack}")
     status = stack_status(stack)
-    if status in ("ROLLBACK_COMPLETE", "ROLLBACK_FAILED", "DELETE_FAILED") or (status or "").endswith("_IN_PROGRESS"):
+    if status == "ROLLBACK_COMPLETE":
+        # A failed CREATE: the stack holds no resources and can only be deleted before it is created again.
+        print(f"{stack} is in ROLLBACK_COMPLETE (a failed create). Events that failed first:")
+        print_failed_events(stack)
+        run(["aws", "cloudformation", "delete-stack", "--stack-name", stack])
+        wait_stack(stack, ("DELETE_COMPLETE",))  # a DELETE_FAILED prints its failed events and stops
+        print(f"{stack}: rolled-back stack deleted, creating it again")
+        status = None
+    if status in ("ROLLBACK_FAILED", "DELETE_FAILED", "UPDATE_ROLLBACK_FAILED") or (status or "").endswith(
+        "_IN_PROGRESS"
+    ):
         raise DeployError(f"stack {stack} is in {status}: investigate it (read-only) before deploying again")
     change_set_type = "CREATE" if status in (None, "REVIEW_IN_PROGRESS") else "UPDATE"
     template = prepare_template(env, entry)

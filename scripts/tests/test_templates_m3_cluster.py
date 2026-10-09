@@ -311,15 +311,15 @@ def test_autoscaler_writes_only_on_the_tagged_group(cluster: dict[str, Any]) -> 
         "autoscaling:SetDesiredCapacity",
         "autoscaling:TerminateInstanceInAutoScalingGroup",
     ]
-    assert write["Resource"].startswith("arn:${AWS::Partition}:autoscaling:") or "autoScalingGroup" in write["Resource"]
-    assert set(write["Condition"]["StringEquals"]) == {
-        "aws:ResourceTag/k8s.io/cluster-autoscaler/enabled",
-        "aws:ResourceTag/k8s.io/cluster-autoscaler/x",  # the cluster name is substituted by the test helper
+    resource = write["Resource"]["Fn::Sub"] if isinstance(write["Resource"], dict) else write["Resource"]
+    assert resource.startswith("arn:${AWS::Partition}:autoscaling:") and "autoScalingGroup" in resource
+    assert write["Condition"]["StringEquals"] == {
+        "aws:ResourceTag/k8s.io/cluster-autoscaler/enabled": "true",
+        "aws:ResourceTag/eks:cluster-name": {"Ref": "Cluster"},
     }
-    raw = cluster["Resources"]["AutoscalerWritePolicy"]["Properties"]["PolicyDocument"]["Fn::Sub"]
-    assert "aws:ResourceTag/k8s.io/cluster-autoscaler/${ClusterName}" in raw[0] and raw[1] == {
-        "ClusterName": {"Ref": "Cluster"}
-    }
+    # CloudFormation requires a JSON object for PolicyDocument, never a string (Fn::Sub of JSON text)
+    assert isinstance(cluster["Resources"]["AutoscalerWritePolicy"]["Properties"]["PolicyDocument"], dict)
+    assert "Fn::Sub" not in cluster["Resources"]["AutoscalerWritePolicy"]["Properties"]["PolicyDocument"]
     # Everything else the autoscaler may do is a read action.
     for statement in statements_of(documents["AutoscalerReadPolicy"]):
         assert all(a.split(":")[1].startswith(("Describe", "Get")) for a in actions_of(statement))

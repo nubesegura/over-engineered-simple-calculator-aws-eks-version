@@ -641,37 +641,28 @@ Resources:
             Action: eks:DescribeNodegroup
             Resource: !Sub "arn:${AWS::Partition}:eks:${AWS::Region}:${AWS::AccountId}:nodegroup/${Cluster}/eksng-${RegionCode}-${Context}-${EnvType}/*"
 
-  # The write actions are limited to Auto Scaling groups that carry both autoscaler tags. The tag key of the
-  # cluster contains the cluster name, which a map key cannot take from a parameter, so the document is a
-  # JSON string with substitution.
+  # The write actions are limited to the Auto Scaling group of this cluster: the group must carry the autoscaler
+  # tag `k8s.io/cluster-autoscaler/enabled` and the tag `eks:cluster-name` that EKS puts on the groups of its
+  # managed node groups, with this cluster's name as value (a tag key cannot take a parameter, a value can, so
+  # the document stays a JSON object, which CloudFormation requires for PolicyDocument).
   AutoscalerWritePolicy:
     Type: AWS::IAM::RolePolicy
     Properties:
       PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-autoscaler-write-${EnvType}"
       RoleName: !Ref AutoscalerRole
-      PolicyDocument: !Sub
-        - |
-          {
-            "Version": "2012-10-17",
-            "Statement": [
-              {
-                "Sid": "ScaleTheTaggedGroupOnly",
-                "Effect": "Allow",
-                "Action": [
-                  "autoscaling:SetDesiredCapacity",
-                  "autoscaling:TerminateInstanceInAutoScalingGroup"
-                ],
-                "Resource": "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/*",
-                "Condition": {
-                  "StringEquals": {
-                    "aws:ResourceTag/k8s.io/cluster-autoscaler/enabled": "true",
-                    "aws:ResourceTag/k8s.io/cluster-autoscaler/${ClusterName}": "owned"
-                  }
-                }
-              }
-            ]
-          }
-        - ClusterName: !Ref Cluster
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ScaleTheTaggedGroupOnly
+            Effect: Allow
+            Action:
+              - autoscaling:SetDesiredCapacity
+              - autoscaling:TerminateInstanceInAutoScalingGroup
+            Resource: !Sub "arn:${AWS::Partition}:autoscaling:${AWS::Region}:${AWS::AccountId}:autoScalingGroup:*:autoScalingGroupName/*"
+            Condition:
+              StringEquals:
+                "aws:ResourceTag/k8s.io/cluster-autoscaler/enabled": "true"
+                "aws:ResourceTag/eks:cluster-name": !Ref Cluster
 
   AutoscalerAssociation:
     Type: AWS::EKS::PodIdentityAssociation
