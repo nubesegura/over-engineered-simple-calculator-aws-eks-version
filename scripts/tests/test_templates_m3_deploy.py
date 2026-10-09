@@ -448,7 +448,8 @@ def test_instance_has_no_key_no_public_ip_and_is_in_a_private_subnet(bastion: di
     (nic,) = instance["NetworkInterfaces"]
     assert nic["AssociatePublicIpAddress"] is False
     assert "PrivateSubnetA" in json.dumps(nic["SubnetId"]) and "Public" not in json.dumps(nic["SubnetId"])
-    assert instance["InstanceType"] == "t4g.nano"
+    assert instance["InstanceType"] == "t4g.medium"
+    assert instance["CreditSpecification"] == {"CPUCredits": "standard"}
     assert "arm64" in bastion["Parameters"]["BastionImageId"]["Default"]
     assert instance["MetadataOptions"] == {
         "HttpTokens": "required",
@@ -521,7 +522,8 @@ def test_sessions_are_logged_to_an_encrypted_log_group(bastion: dict[str, Any]) 
 def user_data(bastion: dict[str, Any]) -> str:
     sub = bastion["Resources"]["BastionInstance"]["Properties"]["UserData"]["Fn::Base64"]["Fn::Sub"]
     script: str = sub[0]
-    return script.replace("${ClusterName}", "eksc-test").replace("${AWS::Region}", "us-east-2")
+    rendered = script.replace("${ClusterName}", "eksc-test").replace("${AWS::Region}", "us-east-2")
+    return rendered.replace("${!", "${")  # Fn::Sub escape for a literal shell brace
 
 
 def test_user_data_pins_and_verifies_every_download(bastion: dict[str, Any]) -> None:
@@ -530,7 +532,7 @@ def test_user_data_pins_and_verifies_every_download(bastion: dict[str, Any]) -> 
     for tool in ("KUBECTL", "HELM", "AWSCLI"):
         assert re.fullmatch(r"v?\d+\.\d+\.\d+", pins[f"{tool}_VERSION"])
         assert SHA256.match(pins[f"{tool}_SHA256"])
-    assert script.count('fetch "https://') == 3
+    assert script.count('fetch "https://') == 6
     assert "sha256sum -c -" in script
     assert "latest" not in script and "stable.txt" not in script
     assert 'update-kubeconfig --name "eksc-test" --region "us-east-2"' in script
@@ -553,6 +555,46 @@ def test_user_data_has_no_secrets_and_is_valid_bash(bastion: dict[str, Any], tmp
     path.write_text(script, encoding="utf-8", newline="\n")
     check = subprocess.run([BASH, "-n", posix(path)], capture_output=True, text=True, check=False)
     assert check.returncode == 0, check.stderr
+
+
+def test_root_volume_is_20_gib_encrypted_gp3_on_xvda(bastion: dict[str, Any]) -> None:
+    (disk,) = bastion["Resources"]["BastionInstance"]["Properties"]["BlockDeviceMappings"]
+    assert disk["DeviceName"] == "/dev/xvda"
+    assert disk["Ebs"]["VolumeSize"] == 20 and disk["Ebs"]["Encrypted"] is True
+    assert disk["Ebs"]["VolumeType"] == "gp3" and disk["Ebs"]["DeleteOnTermination"] is True
+
+
+def test_extra_tools_are_pinned_with_publisher_checksums_and_hey_is_absent(bastion: dict[str, Any]) -> None:
+    script = user_data(bastion)
+    pins = dict(re.findall(r"^([A-Z0-9_]+)=(\S+)$", script, flags=re.M))
+    for tool in ("K9S", "STERN", "JQ"):
+        assert re.fullmatch(r"v?\d+\.\d+\.\d+", pins[f"{tool}_VERSION"])
+        assert SHA256.match(pins[f"{tool}_SHA256"])
+    assert "stern_${STERN_VERSION}_linux_arm64.tar.gz" in script
+    assert "k9s_Linux_arm64.tar.gz" in script and "_linux_arm64.tar.gz" in script and "jq-linux-arm64" in script
+    code = re.sub(r"(?m)^\s*#.*$", "", script)
+    assert not re.search(r"\bhey\b", code)
+    assert "dnf -y install unzip" in code and code.count("dnf") == 1
+
+
+def test_user_data_keeps_large_downloads_off_tmp(bastion: dict[str, Any]) -> None:
+    script = user_data(bastion)
+    assert "mktemp -d -p /var/tmp" in script
+    assert not re.search(r"(?<![\w.])/tmp", script.replace("/var/tmp", ""))
+    assert re.search(r'rm -rf "\$work_dir/aws"', script) and 'rm -rf "$work_dir"' in script
+
+
+def test_user_data_fails_loudly_leaves_a_marker_and_serves_every_shell(bastion: dict[str, Any]) -> None:
+    script = user_data(bastion)
+    assert "set -euo pipefail" in script
+    assert re.search(r"trap '.*oecalc-bastion-setup\.log' ERR", script)
+    assert script.count('step="') >= 5
+    lines = [line for line in script.splitlines() if line.strip()]
+    assert lines[-1] == "touch /etc/oecalc/setup-complete"  # only reached when every step succeeded
+    assert "/etc/profile.d/oecalc-kubeconfig.sh" in script
+    assert "KUBECONFIG=/etc/oecalc/kubeconfig' >> /etc/environment" in script
+    assert "cp /etc/oecalc/kubeconfig /etc/skel/.kube/config" in script
+    assert "AWS_SECRET" not in script  # the kubeconfig carries no credentials
 
 
 def test_bastion_exports_follow_the_pattern(bastion: dict[str, Any]) -> None:

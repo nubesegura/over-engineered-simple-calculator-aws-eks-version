@@ -1,10 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
-  Bastion stack (deployed only when EnableBastion is true): one small arm64 instance in a private subnet,
+  Bastion stack (deployed only when EnableBastion is true): one arm64 instance in a private subnet,
   reached only with Session Manager, with kubectl, helm and the AWS CLI configured for the cluster and a
   read-only EKS access entry. Sessions are logged to an encrypted log group.
 
 # Notes for the operator
+# - Size: t4g.medium (2 vCPU, 4 GiB) with a 20 GiB root volume, because k9s, helm and load tools (stern, jq)
+#   run at the same time in one session; a 512 MB t4g.nano ran out of memory and disk. CPU credits are
+#   "standard" (never unlimited), so a busy session slows down instead of costing extra.
 # - Start a session with the preferences document of this stack so that it is logged (see the Outputs):
 #   aws ssm start-session --target <instance id> --document-name <SessionDocumentName>
 #   The account-wide default document (SSM-SessionManagerRunShell) is not touched.
@@ -147,7 +150,9 @@ Resources:
     Type: AWS::EC2::Instance
     Properties:
       ImageId: !Ref BastionImageId
-      InstanceType: t4g.nano
+      InstanceType: t4g.medium
+      CreditSpecification:
+        CPUCredits: standard # never unlimited
       IamInstanceProfile: !Ref BastionInstanceProfile # EC2-14
       DisableApiTermination: !If [IsProd, true, false] # EC2-13
       PropagateTagsToVolumeOnCreation: true # EC2-15
@@ -167,7 +172,7 @@ Resources:
         - DeviceName: /dev/xvda
           Ebs:
             VolumeType: gp3 # EC2-10
-            VolumeSize: 8
+            VolumeSize: 20
             Encrypted: true # EC2-04
             KmsKeyId:
               Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
@@ -181,8 +186,13 @@ Resources:
             #!/bin/bash
             # Installs kubectl, helm and the AWS CLI (arm64) at pinned versions with checksum verification and
             # writes the kubeconfig of the cluster. Runs once at the first boot. Contains no credentials.
+            # Downloads go to /var/tmp (root disk): /tmp is a small tmpfs on a 512 MB instance.
+            # The pinned AWS CLI install is the default path (the image's own v2 is not used).
             set -euo pipefail
             exec > >(tee -a /var/log/oecalc-bastion-init.log) 2>&1
+
+            step="starting"
+            trap 'echo "$(date -u +%FT%TZ) FAILED at step: $step (line $LINENO: $BASH_COMMAND)" >> /var/log/oecalc-bastion-setup.log' ERR
 
             KUBECTL_VERSION=v1.37.1
             KUBECTL_SHA256=ff749f4b78d9c4f1ec87307df9b50119ed819e2094aa9810cb9acffc3286c8c7
@@ -190,8 +200,17 @@ Resources:
             HELM_SHA256=f14e804dfee240f55525b667488fe9adca349e63e00c9af634c0beb1421ac310
             AWSCLI_VERSION=2.37.11
             AWSCLI_SHA256=759f4c75c832c171ce1401a956c5b6c9fe932c311e36786344641bd76adaf08a
+            # Checksums of the next three come from the publishers' own files (k9s checksums.sha256,
+            # stern checksums.txt, jq sha256sum.txt of the release). hey is not installed: it publishes no
+            # arm64 binary and no checksum.
+            K9S_VERSION=v0.51.0
+            K9S_SHA256=3ee05c82e5f9198928a4e86133608ba6a2c10a2244d6a7789e820f78319d640c
+            STERN_VERSION=1.34.0
+            STERN_SHA256=e215cfc5e42d71e93b77d3fac8f0df7d736271f44b2d92a5b417eaa588edff3a
+            JQ_VERSION=1.8.2
+            JQ_SHA256=8b85c817833814ddca00a144c33705546355afccf0cf39b188f3cdb48b852309
 
-            work_dir="$(mktemp -d)"
+            work_dir="$(mktemp -d -p /var/tmp)"
             cd "$work_dir"
 
             # fetch URL FILE SHA256: download and refuse anything that does not match the pinned checksum
@@ -200,29 +219,58 @@ Resources:
               echo "$3  $2" | sha256sum -c -
             }
 
+            step="kubectl"
             fetch "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/arm64/kubectl" kubectl "$KUBECTL_SHA256"
             install -m 0755 kubectl /usr/local/bin/kubectl
 
+            step="helm"
             fetch "https://get.helm.sh/helm-$HELM_VERSION-linux-arm64.tar.gz" helm.tgz "$HELM_SHA256"
             tar -xzf helm.tgz linux-arm64/helm
             install -m 0755 linux-arm64/helm /usr/local/bin/helm
 
+            step="aws cli"
             fetch "https://awscli.amazonaws.com/awscli-exe-linux-aarch64-$AWSCLI_VERSION.zip" awscli.zip "$AWSCLI_SHA256"
             command -v unzip > /dev/null || dnf -y install unzip
             unzip -q awscli.zip
             ./aws/install --update
+            rm -rf "$work_dir/aws" "$work_dir/awscli.zip"
+            /usr/local/bin/aws --version
 
-            mkdir -p /etc/oecalc
+            step="jq"
+            fetch "https://github.com/jqlang/jq/releases/download/jq-$JQ_VERSION/jq-linux-arm64" jq "$JQ_SHA256"
+            install -m 0755 jq /usr/local/bin/jq
+
+            step="k9s"
+            fetch "https://github.com/derailed/k9s/releases/download/$K9S_VERSION/k9s_Linux_arm64.tar.gz" k9s.tgz "$K9S_SHA256"
+            tar -xzf k9s.tgz k9s
+            install -m 0755 k9s /usr/local/bin/k9s
+
+            step="stern"
+            fetch "https://github.com/stern/stern/releases/download/v$STERN_VERSION/stern_${!STERN_VERSION}_linux_arm64.tar.gz" stern.tgz "$STERN_SHA256"
+            tar -xzf stern.tgz stern
+            install -m 0755 stern /usr/local/bin/stern
+
+            step="kubeconfig"
+            mkdir -p /etc/oecalc /etc/skel/.kube
             export HOME=/root
             /usr/local/bin/aws eks update-kubeconfig --name "${ClusterName}" --region "${AWS::Region}" --kubeconfig /etc/oecalc/kubeconfig
             chmod 0644 /etc/oecalc/kubeconfig
+            # no credentials in the file: it calls "aws eks get-token" at each use
+            cp /etc/oecalc/kubeconfig /etc/skel/.kube/config
+            chmod 0600 /etc/skel/.kube/config
+
+            step="shell environment"
             cat > /etc/profile.d/oecalc-kubeconfig.sh <<'PROFILE'
             export KUBECONFIG=/etc/oecalc/kubeconfig
             export AWS_DEFAULT_REGION=${AWS::Region}
             PROFILE
+            grep -q '^KUBECONFIG=' /etc/environment || echo 'KUBECONFIG=/etc/oecalc/kubeconfig' >> /etc/environment
+
+            step="cleanup"
             cd /
             rm -rf "$work_dir"
             echo "Bastion tools installed"
+            touch /etc/oecalc/setup-complete
           - ClusterName:
               Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
 
