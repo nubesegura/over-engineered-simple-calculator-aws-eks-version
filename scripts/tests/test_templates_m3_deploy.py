@@ -158,6 +158,10 @@ def test_source_read_is_limited_to_this_repository_and_environment_prefix(deploy
     read = by_sid["ReadSourceArchive"]
     assert set(read["Action"]) == {"s3:GetObject", "s3:GetObjectVersion"}
     assert read["Resource"]["Fn::Sub"].endswith("/${TagRepoName}/${EnvType}/*")
+    assert "Default" not in deploy["Parameters"]["SourceBucketName"]  # required: resolved by cfn_deploy.py
+    location = json.dumps(deploy["Resources"]["DeployProject"]["Properties"]["Source"]["Location"])
+    assert "SourceBucketName" in location and "TagRepoName" in location and "EnvType" in location
+    assert "source-bucket-set-at-start-build" not in location
     assert deploy["Parameters"]["SourceBucketNamePattern"]["Default"].startswith("aws-sam-cli-managed-default-")
 
 

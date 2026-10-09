@@ -841,3 +841,51 @@ def test_destroy_plan_never_deletes_the_log_group(repo: Path, cli: FakeCli) -> N
     world.log_groups = [PROXY_LOG_GROUP]
     assert deploy.main(["destroy", "--env", "dev", "--mode", "plan"]) == 0
     assert world.log_groups == [PROXY_LOG_GROUP]
+
+
+# --------------------------------------------------------------------------- SourceBucketName
+SOURCE_BUCKET = "aws-sam-cli-managed-default-samclisourcebucket-abc123"
+BUCKET_TEMPLATE = SCHEDULER_TEMPLATE.replace("Resources:", "  SourceBucketName:\n    Type: String\nResources:")
+
+
+def with_bucket_parameter(repo: Path) -> Path:
+    template = repo / "templates" / "security.yaml"
+    template.write_text(BUCKET_TEMPLATE, encoding="utf-8")
+    return template
+
+
+def test_source_bucket_name_is_resolved_from_the_sam_stack(repo: Path, cli: FakeCli) -> None:
+    template = with_bucket_parameter(repo)
+    world = World(cli, {deploy.SAM_STACK: "CREATE_COMPLETE"})
+    world.outputs[deploy.SAM_STACK] = {"SourceBucket": SOURCE_BUCKET}
+    values = {p["ParameterKey"]: p["ParameterValue"] for p in deploy.stack_parameters("dev", template)}
+    assert values["SourceBucketName"] == SOURCE_BUCKET
+
+
+def test_missing_sam_stack_is_a_clear_error(repo: Path, cli: FakeCli) -> None:
+    template = with_bucket_parameter(repo)
+    World(cli)
+    with pytest.raises(deploy.DeployError, match="aws-sam-cli-managed-default does not exist"):
+        deploy.stack_parameters("dev", template)
+
+
+def test_sam_stack_without_the_bucket_output_is_a_clear_error(repo: Path, cli: FakeCli) -> None:
+    template = with_bucket_parameter(repo)
+    World(cli, {deploy.SAM_STACK: "CREATE_COMPLETE"})
+    with pytest.raises(deploy.DeployError, match="no output SourceBucket"):
+        deploy.stack_parameters("dev", template)
+
+
+def test_explicit_override_wins_and_needs_no_aws_call(
+    repo: Path, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    template = with_bucket_parameter(repo)
+    monkeypatch.setenv("CFN_PARAM_SourceBucketName", "my-own-bucket")
+    values = {p["ParameterKey"]: p["ParameterValue"] for p in deploy.stack_parameters("dev", template)}
+    assert values["SourceBucketName"] == "my-own-bucket"
+    assert not cli.calls
+
+
+def test_templates_without_the_parameter_do_not_look_for_the_bucket(repo: Path, cli: FakeCli) -> None:
+    deploy.stack_parameters("dev", repo / "templates" / "network.yaml")
+    assert not cli.calls

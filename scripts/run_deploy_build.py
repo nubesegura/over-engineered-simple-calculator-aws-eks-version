@@ -33,8 +33,6 @@ IGNORED_PARTS = {"__pycache__", "tests", ".pytest_cache", ".mypy_cache", ".ruff_
 IGNORED_SUFFIXES = {".pyc", ".pyo"}
 FIXED_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
 FILE_MODE = 0o644 << 16
-SAM_STACK = "aws-sam-cli-managed-default"
-SAM_BUCKET_OUTPUT = "SourceBucket"
 COMMANDS = ("addons", "deploy", "uninstall")
 BUILD_TIMEOUT_SECONDS = 45 * 60
 BUILD_POLL_SECONDS = 15
@@ -75,7 +73,7 @@ def build_archive(root: Path = REPO_ROOT, target: Path | None = None) -> tuple[P
 
 def artifact_bucket() -> str:
     """Name of the SAM managed artifact bucket (output of the SAM managed stack)."""
-    return cfn.stack_outputs(SAM_STACK)[SAM_BUCKET_OUTPUT]
+    return cfn.sam_artifact_bucket()
 
 
 def tail_log(build: dict[str, Any]) -> list[str]:

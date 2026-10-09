@@ -171,6 +171,8 @@ def stack_parameters(env: str, template: Path) -> list[dict[str, str]]:
         if variable.upper().startswith(PARAMETER_PREFIX) and len(variable) > len(PARAMETER_PREFIX):
             name = variable[len(PARAMETER_PREFIX) :]
             values[declared.get(name.lower(), name)] = value  # Windows upper-cases variable names
+    if SOURCE_BUCKET_PARAMETER in template_parameters(template) and SOURCE_BUCKET_PARAMETER not in values:
+        values[SOURCE_BUCKET_PARAMETER] = sam_artifact_bucket()
     result: list[dict[str, str]] = []
     missing: list[str] = []
     for name, default in template_parameters(template).items():
@@ -181,6 +183,24 @@ def stack_parameters(env: str, template: Path) -> list[dict[str, str]]:
     if missing:
         raise DeployError(f"{template.name}: no value for parameters {missing}")
     return result
+
+
+SAM_STACK = "aws-sam-cli-managed-default"
+SAM_BUCKET_OUTPUT = "SourceBucket"
+SOURCE_BUCKET_PARAMETER = "SourceBucketName"
+
+
+def sam_artifact_bucket() -> str:
+    """Name of the SAM managed artifact bucket (output of the SAM managed stack; its name carries no account id)."""
+    if stack_status(SAM_STACK) is None:
+        raise DeployError(
+            f"stack {SAM_STACK} does not exist: it is created by the first `sam package` (resolve_s3), so deploy "
+            "the SAM stacks (scheduler, rotation) first"
+        )
+    try:
+        return stack_outputs(SAM_STACK)[SAM_BUCKET_OUTPUT]
+    except KeyError:
+        raise DeployError(f"stack {SAM_STACK} has no output {SAM_BUCKET_OUTPUT}") from None
 
 
 def stack_status(stack: str) -> str | None:

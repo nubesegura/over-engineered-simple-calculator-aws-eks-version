@@ -45,6 +45,12 @@ Parameters:
   TagRepoName:
     Type: String
     Description: Value of the repo-name tag; also the first part of the key prefix of the source archives in the artifact bucket
+  SourceBucketName:
+    Type: String
+    Description: >-
+      Name of the SAM artifact bucket (output SourceBucket of the aws-sam-cli-managed-default stack). CodeBuild
+      checks at creation that the source bucket exists, so scripts/cfn_deploy.py resolves it at each deployment.
+      Every build still passes sourceLocationOverride with the archive it uploaded.
   SourceBucketNamePattern:
     Type: String
     Default: "aws-sam-cli-managed-default-samclisourcebucket-*"
@@ -250,8 +256,8 @@ Resources:
           - { Name: ALLOW_AUTOSCALER_MINOR_SKEW, Type: PLAINTEXT, Value: !Ref AllowAutoscalerMinorSkew }
       Source:
         Type: S3
-        # Placeholder: every build passes sourceLocationOverride with the real bucket and key.
-        Location: !Sub "source-bucket-set-at-start-build/${TagRepoName}/${EnvType}/source.zip"
+        # The bucket must exist when the project is created; every build overrides the key with its archive.
+        Location: !Sub "${SourceBucketName}/${TagRepoName}/${EnvType}/source.zip"
         BuildSpec: |
           version: 0.2
 
