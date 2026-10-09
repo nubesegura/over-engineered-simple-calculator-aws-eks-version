@@ -117,6 +117,9 @@ class World:
         cli.on("cloudformation get-template", self.get_template)
         cli.on("cloudformation delete-stack", self.delete_stack)
         cli.on("cloudformation describe-stack-events", self.events)
+        self.log_groups: list[str] = []
+        cli.on("logs describe-log-groups", lambda _a: {"logGroups": [{"logGroupName": n} for n in self.log_groups]})
+        cli.on("logs delete-log-group", self.delete_log_group)
         cli.on("sam build", Reply())
         cli.on("sam package", Reply())
 
@@ -168,6 +171,11 @@ class World:
         self.statuses[stack] = "DELETE_FAILED" if stack in self.delete_fails else "DELETE_COMPLETE"
         if self.statuses[stack] == "DELETE_COMPLETE":
             del self.statuses[stack]
+        return Reply()
+
+    def delete_log_group(self, args: list[str]) -> Reply:
+        name = args[args.index("--log-group-name") + 1]
+        self.log_groups.remove(name)
         return Reply()
 
     def events(self, _args: list[str]) -> Reply:
@@ -794,3 +802,42 @@ def test_step_summary_redacts_account_ids(tmp_path: Path, monkeypatch: pytest.Mo
     text = target.read_text(encoding="utf-8")
     assert "123456789012" not in text
     assert "arn:aws:kms:us-east-2:***:key/abc" in text
+
+
+PROXY_LOG_GROUP = "/aws/rds/proxy/rdsp-useast2-oecalc-eks-dev"
+
+
+def test_destroy_removes_the_proxy_log_group_after_the_stacks(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = deployed_world(cli)
+    world.log_groups = [PROXY_LOG_GROUP]
+    assert deploy.main(["destroy", "--env", "dev", "--mode", "destroy"]) == 0
+    assert world.log_groups == []
+    order = [c[1:3] for c in cli.calls if c[0] == "aws"]
+    assert order.index(["logs", "delete-log-group"]) > max(
+        i for i, c in enumerate(order) if c == ["cloudformation", "delete-stack"]
+    )
+    assert f"Log group {PROXY_LOG_GROUP}: deleted" in capsys.readouterr().out
+
+
+def test_destroy_deletes_only_the_exact_log_group_name(repo: Path, cli: FakeCli) -> None:
+    world = World(cli)
+    world.log_groups = [PROXY_LOG_GROUP + "-old", "/aws/rds/proxy/rdsp-useast2-oecalc-eks-prod"]
+    assert deploy.main(["destroy", "--env", "dev", "--mode", "destroy"]) == 0
+    assert not cli.called("logs delete-log-group")
+    assert len(world.log_groups) == 2
+
+
+def test_destroy_cleans_the_residue_even_when_no_stack_is_left(repo: Path, cli: FakeCli) -> None:
+    world = World(cli)
+    world.log_groups = [PROXY_LOG_GROUP]
+    assert deploy.main(["destroy", "--env", "dev", "--mode", "destroy"]) == 0
+    assert world.log_groups == []
+
+
+def test_destroy_plan_never_deletes_the_log_group(repo: Path, cli: FakeCli) -> None:
+    world = deployed_world(cli)
+    world.log_groups = [PROXY_LOG_GROUP]
+    assert deploy.main(["destroy", "--env", "dev", "--mode", "plan"]) == 0
+    assert world.log_groups == [PROXY_LOG_GROUP]

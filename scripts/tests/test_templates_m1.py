@@ -29,7 +29,7 @@ FROZEN_SG_DESCRIPTIONS = {
 def load_cfn(name: str) -> dict[str, Any]:
     """Load a CloudFormation YAML file; intrinsic short forms become {"Fn::X": value} like in JSON."""
 
-    class Loader(yaml.SafeLoader):  # type: ignore[misc]
+    class Loader(yaml.SafeLoader):
         pass
 
     def construct(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> Any:
@@ -39,8 +39,10 @@ def load_cfn(name: str) -> dict[str, Any]:
                 value = value.split(".", 1)
         elif isinstance(node, yaml.SequenceNode):
             value = loader.construct_sequence(node, deep=True)
-        else:
+        elif isinstance(node, yaml.MappingNode):
             value = loader.construct_mapping(node, deep=True)
+        else:
+            raise TypeError(f"unsupported YAML node for !{tag_suffix}")
         key = "Ref" if tag_suffix == "Ref" else f"Fn::{tag_suffix}"
         return {key: value}
 

@@ -17,7 +17,7 @@ NAT_ON_START_UTC = 13  # 08:00 Panama (UTC-5)
 def load_cfn(name: str) -> dict[str, Any]:
     """Load a CloudFormation YAML file; intrinsic short forms become {"Fn::X": value} like in JSON."""
 
-    class Loader(yaml.SafeLoader):  # type: ignore[misc]
+    class Loader(yaml.SafeLoader):
         pass
 
     def construct(loader: yaml.SafeLoader, tag_suffix: str, node: yaml.Node) -> Any:
@@ -27,8 +27,10 @@ def load_cfn(name: str) -> dict[str, Any]:
                 value = value.split(".", 1)
         elif isinstance(node, yaml.SequenceNode):
             value = loader.construct_sequence(node, deep=True)
-        else:
+        elif isinstance(node, yaml.MappingNode):
             value = loader.construct_mapping(node, deep=True)
+        else:
+            raise TypeError(f"unsupported YAML node for !{tag_suffix}")
         key = "Ref" if tag_suffix == "Ref" else f"Fn::{tag_suffix}"
         return {key: value}
 
@@ -275,3 +277,16 @@ def test_error_alarm_goes_to_the_alerts_topic(rotation: dict[str, Any]) -> None:
     assert alarm["MetricName"] == "Errors"
     assert alarm["Namespace"] == "AWS/Lambda"
     assert "AlertsTopicArn" in json.dumps(alarm["AlarmActions"])
+
+
+def test_proxy_log_group_is_owned_encrypted_and_created_before_the_proxy(database: dict[str, Any]) -> None:
+    group = database["Resources"]["ProxyLogGroup"]
+    assert group["DeletionPolicy"] == "Delete"
+    assert group["UpdateReplacePolicy"] == "Delete"
+    props = group["Properties"]
+    assert props["LogGroupName"]["Fn::Sub"] == "/aws/rds/proxy/rdsp-${RegionCode}-${Context}-eks-${EnvType}"
+    assert props["RetentionInDays"] == {"Ref": "LogRetentionDays"}
+    assert "DataKeyArn" in json.dumps(props["KmsKeyId"])
+    proxy = database["Resources"]["Proxy"]
+    assert "ProxyLogGroup" in proxy["DependsOn"]
+    assert proxy["Properties"]["DBProxyName"]["Fn::Sub"].endswith(props["LogGroupName"]["Fn::Sub"].split("/")[-1])

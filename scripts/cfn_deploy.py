@@ -682,6 +682,23 @@ def uninstall_helm_releases(env: str) -> None:
     print(f"Helm uninstall for {env}: not implemented yet (task 7.1); no release is installed by this milestone.")
 
 
+def proxy_log_group_name(config: dict[str, Any], env: str) -> str:
+    """Log group that RDS Proxy creates for the proxy of this project and environment (exact name)."""
+    p = config["Parameters"]
+    return f"/aws/rds/proxy/rdsp-{p['RegionCode']}-{p['Context']}-eks-{env}"
+
+
+def remove_proxy_log_group(config: dict[str, Any], env: str) -> None:
+    """Delete the RDS Proxy log group when it survived the stacks. Exact name only, never a prefix match."""
+    name = proxy_log_group_name(config, env)
+    found = aws_json(["logs", "describe-log-groups", "--log-group-name-prefix", name], check=False) or {}
+    if not any(group.get("logGroupName") == name for group in found.get("logGroups", [])):
+        print(f"Log group {name}: not present, nothing to delete")
+        return
+    run(["aws", "logs", "delete-log-group", "--log-group-name", name])
+    print(f"Log group {name}: deleted (residue of the RDS proxy that CloudFormation did not own)")
+
+
 def destroy_stack(entry: dict[str, Any], context: str) -> None:
     stack = entry["stack"]
     print(f"::group::Delete {stack}")
@@ -740,11 +757,11 @@ def command_destroy(args: argparse.Namespace) -> int:
     if args.mode != "destroy":
         print("Nothing was deleted (mode plan).")
         return 0
-    if not present:
-        return 0
-    uninstall_helm_releases(args.env)
-    for entry, _ in present:
-        destroy_stack(entry, config["Parameters"]["Context"])
+    if present:
+        uninstall_helm_releases(args.env)
+        for entry, _ in present:
+            destroy_stack(entry, config["Parameters"]["Context"])
+    remove_proxy_log_group(config, args.env)  # safeguard: only after every stack of this repository is gone
     return 0
 
 

@@ -16,7 +16,8 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 
-pb = pr.package_bundle  # type: ignore[attr-defined]  # package_rotation puts src/rotation on sys.path
+_pr: Any = pr  # package_rotation puts src/rotation on sys.path and exposes package_bundle at run time
+pb = _pr.package_bundle
 
 
 def make_pem() -> bytes:

@@ -51,6 +51,7 @@ Parameters:
     Description: Size of the encrypted gp3 root volume of each node
   LogRetentionDays:
     Type: Number
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
     Description: Retention of the control plane log group (14 in dev, 90 in prod)
   VpcCniVersion:
     Type: String
@@ -182,13 +183,11 @@ Resources:
       KubernetesNetworkConfig:
         IpFamily: ipv4
         ServiceIpv4Cidr: !Ref ServiceIpv4Cidr
-      EncryptionConfig: # EKS-03, the API takes the key ARN or the alias ARN
+      EncryptionConfig: # EKS-03. The key ARN (an alias ARN is not documented for this property; Provider.KeyArn is immutable)
         - Resources: [secrets]
           Provider:
-            KeyArn: !Sub
-              - "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:${Alias}"
-              - Alias:
-                  Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:SecretsKeyAlias"
+            KeyArn:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:SecretsKeyArn"
       Logging: # EKS-04
         ClusterLogging:
           EnabledTypes:
@@ -254,10 +253,10 @@ Resources:
               VolumeType: gp3
               VolumeSize: !Ref NodeVolumeSizeGb
               Encrypted: true
-              # Alias: a recreated key keeps it. The key policy of the security stack must let the Auto Scaling
-              # service-linked role use the key (open decision, see the milestone report), or no node can launch.
+              # The key ARN: CloudFormation documents only an ARN for this property. The key policy of the security
+              # stack lets the Auto Scaling service-linked role use the key by its exact role ARN.
               KmsKeyId:
-                Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+                Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
               DeleteOnTermination: true
         TagSpecifications:
           - ResourceType: instance
@@ -879,11 +878,6 @@ Outputs:
     Value: !GetAtt Cluster.Endpoint
     Export:
       Name: !Sub "${AWS::StackName}:ClusterEndpoint"
-  ClusterCertificateAuthorityData:
-    Description: Base64 certificate authority of the cluster (public data, needed by kubeconfig)
-    Value: !GetAtt Cluster.CertificateAuthorityData
-    Export:
-      Name: !Sub "${AWS::StackName}:ClusterCertificateAuthorityData"
   NodeRoleArn:
     Value: !GetAtt NodeRole.Arn
     Export:

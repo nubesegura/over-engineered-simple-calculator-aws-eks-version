@@ -56,7 +56,21 @@ def _ec2_stale(rest: str, profile: str | None, region: str) -> bool:
             "VpcEndpoints", []
         )
         return not found or found[0]["State"] in ("deleted", "deleting")
+    if kind == "instance":
+        reservations = aws(["ec2", "describe-instances", "--instance-ids", rid], profile, region).get("Reservations")
+        instances = [i for r in reservations or [] for i in r.get("Instances", [])]
+        return not instances or all(i.get("State", {}).get("Name") == "terminated" for i in instances)
+    if kind == "volume":
+        volumes = aws(["ec2", "describe-volumes", "--volume-ids", rid], profile, region).get("Volumes")
+        return not volumes or all(v.get("State") == "deleted" for v in volumes)
     by_id = {
+        "network-interface": ("describe-network-interfaces", "--network-interface-ids", "NetworkInterfaces"),
+        "launch-template": ("describe-launch-templates", "--launch-template-ids", "LaunchTemplates"),
+        "network-acl": ("describe-network-acls", "--network-acl-ids", "NetworkAcls"),
+        "snapshot": ("describe-snapshots", "--snapshot-ids", "Snapshots"),
+        "key-pair": ("describe-key-pairs", "--key-pair-ids", "KeyPairs"),
+        "dhcp-options": ("describe-dhcp-options", "--dhcp-options-ids", "DhcpOptions"),
+        "flow-log": ("describe-flow-logs", "--flow-log-ids", "FlowLogs"),
         "security-group": ("describe-security-groups", "--group-ids", "SecurityGroups"),
         "subnet": ("describe-subnets", "--subnet-ids", "Subnets"),
         "vpc": ("describe-vpcs", "--vpc-ids", "Vpcs"),
@@ -72,6 +86,42 @@ def _ec2_stale(rest: str, profile: str | None, region: str) -> bool:
             "SecurityGroupRules"
         )
         return not rules
+    return False
+
+
+# RDS ARN kind -> (describe command, identifier flag, key of the answer). A describe call that answers NotFound
+# (DBInstanceNotFound, DBProxyNotFoundFault, ...) is handled by is_stale as "gone".
+RDS_KINDS = {
+    "db": ("describe-db-instances", "--db-instance-identifier", "DBInstances"),
+    "cluster": ("describe-db-clusters", "--db-cluster-identifier", "DBClusters"),
+    "subgrp": ("describe-db-subnet-groups", "--db-subnet-group-name", "DBSubnetGroups"),
+    "pg": ("describe-db-parameter-groups", "--db-parameter-group-name", "DBParameterGroups"),
+    "cluster-pg": (
+        "describe-db-cluster-parameter-groups",
+        "--db-cluster-parameter-group-name",
+        "DBClusterParameterGroups",
+    ),
+    "og": ("describe-option-groups", "--option-group-name", "OptionGroupsList"),
+    "db-proxy": ("describe-db-proxies", "--db-proxy-name", "DBProxies"),
+    "snapshot": ("describe-db-snapshots", "--db-snapshot-identifier", "DBSnapshots"),
+    "cluster-snapshot": ("describe-db-cluster-snapshots", "--db-cluster-snapshot-identifier", "DBClusterSnapshots"),
+}
+
+
+def _rds_stale(arn: str, rest: str, profile: str | None, region: str) -> bool:
+    kind, _, name = rest.partition(":")
+    if kind == "target-group":
+        # The ARN does not name its proxy: it is gone when no existing proxy lists it.
+        for proxy in aws(["rds", "describe-db-proxies"], profile, region).get("DBProxies", []):
+            groups = aws(
+                ["rds", "describe-db-proxy-target-groups", "--db-proxy-name", proxy["DBProxyName"]], profile, region
+            ).get("TargetGroups", [])
+            if any(g.get("TargetGroupArn") == arn for g in groups):
+                return False
+        return True
+    if kind in RDS_KINDS:
+        command, flag, key = RDS_KINDS[kind]
+        return not aws(["rds", command, flag, name], profile, region).get(key)
     return False
 
 
@@ -114,6 +164,8 @@ def is_stale(arn: str, profile: str | None, region: str) -> bool:
             return _ec2_stale(rest, profile, region)
         if service == "eks":
             return _eks_stale(rest, profile, region)
+        if service == "rds":
+            return _rds_stale(arn, rest, profile, region)
         if service == "elasticloadbalancing":
             return _elb_stale(arn, rest, profile, region)
     except RuntimeError as exc:

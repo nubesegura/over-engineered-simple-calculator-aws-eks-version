@@ -52,6 +52,7 @@ Parameters:
     Description: Ship the postgresql and upgrade logs to CloudWatch Logs (prod only)
   LogRetentionDays:
     Type: Number
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
 
 Conditions:
   IsProd: !Equals [!Ref EnvType, prod]
@@ -306,9 +307,22 @@ Resources:
               StringEquals:
                 kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
 
+  # RDS writes the proxy logs to /aws/rds/proxy/<proxy name>. Created here, before the proxy, so the group has
+  # retention and the data key, is owned by this stack and is deleted with it. The key policy statement for
+  # CloudWatch Logs already covers every log group of the account and Region.
+  ProxyLogGroup:
+    Type: AWS::Logs::LogGroup
+    DeletionPolicy: Delete
+    UpdateReplacePolicy: Delete
+    Properties:
+      LogGroupName: !Sub "/aws/rds/proxy/rdsp-${RegionCode}-${Context}-eks-${EnvType}"
+      RetentionInDays: !Ref LogRetentionDays
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
+
   Proxy:
     Type: AWS::RDS::DBProxy
-    DependsOn: ProxyRolePolicy
+    DependsOn: [ProxyRolePolicy, ProxyLogGroup]
     Properties:
       DBProxyName: !Sub "rdsp-${RegionCode}-${Context}-eks-${EnvType}"
       EngineFamily: POSTGRESQL

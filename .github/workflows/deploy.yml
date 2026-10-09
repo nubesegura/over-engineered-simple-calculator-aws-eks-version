@@ -15,6 +15,11 @@ on:
         description: "Target environment (dev only for now)"
         type: string
         required: true
+      ignore_nat_window:
+        description: "Deploy the cluster units even when the NAT gateway may be down (outside 08:00-20:30 Panama)"
+        type: boolean
+        required: false
+        default: false
     secrets:
       ROLE_ARN:
         required: true
@@ -51,6 +56,15 @@ jobs:
 
       - name: Checkout Repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # The units after rotation need the NAT gateway (nodes pull images); the scheduler turns it off at 22:00.
+      - name: NAT window preflight
+        env:
+          IGNORE_NAT_WINDOW: ${{ inputs.ignore_nat_window }}
+        run: |
+          flag=""
+          [ "$IGNORE_NAT_WINDOW" = "true" ] && flag="--ignore"
+          python3 scripts/nat_window.py check --env dev --through "$LAST_UNIT" $flag
 
       - name: Validate environment configuration
         env:

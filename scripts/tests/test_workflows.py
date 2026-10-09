@@ -50,7 +50,7 @@ def test_deploy_dev_is_manual_only_and_serialised() -> None:
     deploy = workflow["jobs"]["deploy"]
     assert deploy["needs"] == "ci"
     assert deploy["uses"] == "./.github/workflows/deploy.yml"
-    assert deploy["with"] == {"environment": "dev"}
+    assert deploy["with"] == {"environment": "dev", "ignore_nat_window": "${{ inputs.ignore_nat_window }}"}
     # secrets are passed one by one (never `inherit`), so a new secret is never exposed by accident
     assert set(deploy["secrets"]) == {"ROLE_ARN", "AWS_ACCOUNT_ID", "SUPPORT_EMAIL"}
 
@@ -151,3 +151,13 @@ def test_ci_installs_pinned_helm_with_checksum_and_shellcheck() -> None:
     assert "sha256sum -c" in text and "shellcheck scripts/*.sh" in text
     # the arm64 pin of the build project belongs to the same release
     assert env["HELM_VERSION"] in (REPO / "templates" / "deploy.yaml").read_text(encoding="utf-8")
+
+
+def test_nat_window_preflight_runs_before_any_aws_step_and_has_an_override() -> None:
+    deploy = load("deploy.yml")
+    names = [step.get("name") for step in steps(deploy)]
+    assert names.index("NAT window preflight") < names.index("Configure AWS Credentials")
+    override = triggers(deploy)["workflow_call"]["inputs"]["ignore_nat_window"]
+    assert override["type"] == "boolean" and override["default"] is False
+    dispatch = triggers(load("deploy-dev.yml"))["workflow_dispatch"]["inputs"]["ignore_nat_window"]
+    assert dispatch["type"] == "boolean" and dispatch["default"] is False

@@ -30,6 +30,7 @@ Parameters:
     Description: "true (prod) creates one NAT gateway per Availability Zone and the private default routes here; false (dev) leaves them to the scheduler"
   LogRetentionDays:
     Type: Number
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
     Description: Retention of the flow log group in days
   PodPort:
     Type: Number

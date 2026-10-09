@@ -75,9 +75,9 @@ def test_cluster_is_private_only_with_encryption_logs_and_api_mode(cluster: dict
     assert p["KubernetesNetworkConfig"] == {"IpFamily": "ipv4", "ServiceIpv4Cidr": {"Ref": "ServiceIpv4Cidr"}}
     (encryption,) = p["EncryptionConfig"]
     assert encryption["Resources"] == ["secrets"]
-    key_arn = encryption["Provider"]["KeyArn"]["Fn::Sub"]
-    assert ":SecretsKeyAlias" in json.dumps(key_arn) and "alias" not in key_arn[0].replace("${Alias}", "")
-    assert key_arn[0].endswith(":${Alias}")  # alias ARN: arn:...:kms:<region>:<account>:alias/<name>
+    # The property takes the key ARN (an alias ARN is not documented and Provider.KeyArn is immutable)
+    key_arn = encryption["Provider"]["KeyArn"]["Fn::ImportValue"]["Fn::Sub"]
+    assert key_arn.endswith(":SecretsKeyArn")
 
 
 def test_control_plane_logs_and_log_group(cluster: dict[str, Any]) -> None:
@@ -186,7 +186,7 @@ def test_launch_template_imds_volume_and_security_groups(cluster: dict[str, Any]
     assert (
         ebs["VolumeSize"] == {"Ref": "NodeVolumeSizeGb"} and cluster["Parameters"]["NodeVolumeSizeGb"]["Default"] == 20
     )
-    assert ebs["KmsKeyId"]["Fn::ImportValue"]["Fn::Sub"].endswith(":DataKeyAlias")
+    assert ebs["KmsKeyId"]["Fn::ImportValue"]["Fn::Sub"].endswith(":DataKeyArn")  # CloudFormation documents an ARN
     groups = data["SecurityGroupIds"]
     assert groups[0]["Fn::ImportValue"]["Fn::Sub"].endswith(":NodeSecurityGroupId")
     assert groups[1] == {"Fn::GetAtt": ["Cluster", "ClusterSecurityGroupId"]}
@@ -281,7 +281,12 @@ def test_no_role_can_manage_aliases_and_kms_is_by_alias_and_service(cluster: dic
             assert "kms:ResourceAliases" in condition["ForAnyValue:StringEquals"], name  # never a key ARN
             if name != "ClusterRoleSecretsKeyPolicy":
                 assert condition["StringEquals"]["kms:ViaService"], name
-    assert "DataKeyArn" not in json.dumps({k: v for k, v in cluster["Resources"].items() if k != "ClusterLogGroup"})
+    # IAM policies never name a key ARN; the only ARNs of the data key are the log group, the launch template volume
+    # (CloudFormation documents only an ARN there) and the cluster encryption provider
+    policies = {
+        k: v for k, v in cluster["Resources"].items() if v["Type"] in ("AWS::IAM::RolePolicy", "AWS::IAM::Role")
+    }
+    assert "DataKeyArn" not in json.dumps(policies) and "SecretsKeyArn" not in json.dumps(policies)
 
 
 def test_calc_and_history_publish_to_the_alerts_topic_and_migrate_does_not(cluster: dict[str, Any]) -> None:
@@ -342,7 +347,6 @@ def test_outputs_are_the_agreed_exports(cluster: dict[str, Any]) -> None:
         "ClusterArn",
         "ClusterSecurityGroupId",
         "ClusterEndpoint",
-        "ClusterCertificateAuthorityData",
         "NodeRoleArn",
         "NodeGroupName",
         "KubernetesVersion",

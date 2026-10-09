@@ -35,6 +35,7 @@ Parameters:
     AllowedPattern: "^[a-z0-9]+$"
   LogRetentionDays:
     Type: Number
+    AllowedValues: [1, 3, 5, 7, 14, 30, 60, 90, 120, 150, 180, 365, 400, 545, 731, 1096, 1827, 2192, 2557, 2922, 3288, 3653]
     Description: Retention of the session log group in days
   BastionWriteAccess:
     Type: String
@@ -88,7 +89,6 @@ Resources:
           shellProfile:
             linux: "export KUBECONFIG=/etc/oecalc/kubeconfig"
             windows: ""
-            macos: ""
       Tags:
         - Key: Name
           Value: !Sub "ssmd-${RegionCode}-${Context}-eks-bastion-${EnvType}"

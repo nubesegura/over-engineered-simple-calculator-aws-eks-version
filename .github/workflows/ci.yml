@@ -92,7 +92,7 @@ jobs:
         run: |
           ruff check --config src/scheduler/pyproject.toml src/scheduler scripts
           ruff format --config src/scheduler/pyproject.toml --check src/scheduler scripts
-          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/tests scripts/package_rotation.py
+          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/nat_window.py scripts/tests scripts/package_rotation.py
           (cd src/scheduler && mypy app.py)
 
   # PLACEHOLDER (task 4.1): Python core job (ruff, ruff format --check, mypy strict, lint-imports, pytest with

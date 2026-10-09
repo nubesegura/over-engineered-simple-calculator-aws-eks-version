@@ -139,7 +139,7 @@ def test_ec2_kinds_are_stale_only_when_gone(cli: FakeCli, rest: str, key: str, e
 
 
 def test_unlisted_ec2_kinds_and_plain_names_are_never_stale() -> None:
-    assert check.is_stale(f"arn:aws:ec2:us-east-2:{ACCT}:volume/vol-1", None, "us-east-2") is False
+    assert check.is_stale(f"arn:aws:ec2:us-east-2:{ACCT}:capacity-reservation/cr-1", None, "us-east-2") is False
     assert check.short("not-an-arn") == "not-an-arn"
 
 
@@ -345,3 +345,125 @@ def test_workflow_depends_on_nothing_from_the_ecs_repository() -> None:
     text = WORKFLOW.read_text(encoding="utf-8").lower()
     assert "ecs" not in text.replace("secrets", "")
     assert "terragrunt" not in text
+
+
+def ec2_arn(rest: str) -> str:
+    return f"arn:aws:ec2:us-east-2:{ACCT}:{rest}"
+
+
+def rds_arn(rest: str) -> str:
+    return f"arn:aws:rds:us-east-2:{ACCT}:{rest}"
+
+
+NOT_FOUND = Reply(returncode=254, stderr="An error occurred (InvalidInstanceID.NotFound)")
+
+
+@pytest.mark.parametrize(
+    ("rest", "key", "gone", "live"),
+    [
+        (
+            "instance/i-1",
+            "ec2 describe-instances",
+            {"Reservations": [{"Instances": [{"State": {"Name": "terminated"}}]}]},
+            {"Reservations": [{"Instances": [{"State": {"Name": "running"}}]}]},
+        ),
+        (
+            "instance/i-1",
+            "ec2 describe-instances",
+            NOT_FOUND,
+            {"Reservations": [{"Instances": [{"State": {"Name": "stopped"}}]}]},
+        ),
+        ("volume/vol-1", "ec2 describe-volumes", {"Volumes": []}, {"Volumes": [{"State": "available"}]}),
+        ("volume/vol-1", "ec2 describe-volumes", NOT_FOUND, {"Volumes": [{"State": "in-use"}]}),
+        (
+            "volume/vol-1",
+            "ec2 describe-volumes",
+            {"Volumes": [{"State": "deleted"}]},
+            {"Volumes": [{"State": "creating"}]},
+        ),
+        (
+            "network-interface/eni-1",
+            "ec2 describe-network-interfaces",
+            NOT_FOUND,
+            {"NetworkInterfaces": [{"Status": "in-use"}]},
+        ),
+        (
+            "network-interface/eni-1",
+            "ec2 describe-network-interfaces",
+            {"NetworkInterfaces": []},
+            {"NetworkInterfaces": [{}]},
+        ),
+        ("launch-template/lt-1", "ec2 describe-launch-templates", NOT_FOUND, {"LaunchTemplates": [{}]}),
+        ("snapshot/snap-1", "ec2 describe-snapshots", NOT_FOUND, {"Snapshots": [{}]}),
+        ("network-acl/acl-1", "ec2 describe-network-acls", {"NetworkAcls": []}, {"NetworkAcls": [{}]}),
+    ],
+)
+def test_instances_volumes_and_interfaces_are_stale_only_when_gone(
+    cli: FakeCli, rest: str, key: str, gone: Any, live: Any
+) -> None:
+    cli.on(key, gone)
+    assert check.is_stale(ec2_arn(rest), None, "us-east-2") is True
+    cli.on(key, live)
+    assert check.is_stale(ec2_arn(rest), None, "us-east-2") is False
+
+
+def test_a_describe_error_other_than_not_found_is_not_hidden(cli: FakeCli) -> None:
+    cli.on("ec2 describe-instances", Reply(returncode=254, stderr="UnauthorizedOperation"))
+    assert check.is_stale(ec2_arn("instance/i-1"), None, "us-east-2") is False
+
+
+@pytest.mark.parametrize(
+    ("rest", "key", "answer_key"),
+    [
+        ("db:rdsi-x", "rds describe-db-instances", "DBInstances"),
+        ("cluster:c-x", "rds describe-db-clusters", "DBClusters"),
+        ("subgrp:sg-x", "rds describe-db-subnet-groups", "DBSubnetGroups"),
+        ("pg:pg-x", "rds describe-db-parameter-groups", "DBParameterGroups"),
+        ("db-proxy:prx-x", "rds describe-db-proxies", "DBProxies"),
+        ("snapshot:snap-x", "rds describe-db-snapshots", "DBSnapshots"),
+    ],
+)
+def test_rds_kinds_are_stale_when_not_found_and_left_when_present(
+    cli: FakeCli, rest: str, key: str, answer_key: str
+) -> None:
+    cli.on(key, Reply(returncode=254, stderr="An error occurred (DBInstanceNotFound)"))
+    assert check.is_stale(rds_arn(rest), None, "us-east-2") is True
+    cli.on(key, {answer_key: [{}]})
+    assert check.is_stale(rds_arn(rest), None, "us-east-2") is False
+    assert check.is_stale(rds_arn("unknown-kind:x"), None, "us-east-2") is False
+
+
+def test_rds_target_group_is_stale_when_its_proxy_is_gone(cli: FakeCli) -> None:
+    arn = rds_arn("target-group:prx-tg-1")
+    cli.on("rds describe-db-proxies", {"DBProxies": []})
+    assert check.is_stale(arn, None, "us-east-2") is True
+    cli.on("rds describe-db-proxies", {"DBProxies": [{"DBProxyName": "rdsp-x"}]})
+    cli.on("rds describe-db-proxy-target-groups", Reply(returncode=254, stderr="DBProxyNotFoundFault"))
+    assert check.is_stale(arn, None, "us-east-2") is True
+    cli.on("rds describe-db-proxy-target-groups", {"TargetGroups": [{"TargetGroupArn": arn}]})
+    assert check.is_stale(arn, None, "us-east-2") is False
+    cli.on("rds describe-db-proxy-target-groups", {"TargetGroups": [{"TargetGroupArn": "other"}]})
+    assert check.is_stale(arn, None, "us-east-2") is True
+
+
+def test_gone_instance_and_volume_do_not_count_in_the_report(account: Account, cli: FakeCli) -> None:
+    account.tagged = [ec2_arn("instance/i-1"), ec2_arn("volume/vol-1"), rds_arn("target-group:prx-tg-1")]
+    cli.on("ec2 describe-instances", NOT_FOUND)
+    cli.on("ec2 describe-volumes", {"Volumes": []})
+    cli.on("rds describe-db-proxies", {"DBProxies": []})
+    assert run_main() == 0
+    cli.on("ec2 describe-volumes", {"Volumes": [{"State": "available"}]})
+    assert run_main() == 1
+
+
+def test_the_proxy_log_group_is_reported_only_while_it_exists(
+    account: Account, capsys: pytest.CaptureFixture[str]
+) -> None:
+    name = "/aws/rds/proxy/rdsp-useast2-oecalc-eks-dev"
+    account.responses["logs describe-log-groups"] = {
+        "logGroups": [{"logGroupName": name, "arn": f"arn:aws:logs:us-east-2:{ACCT}:log-group:{name}:*"}]
+    }
+    assert run_main() == 1
+    assert f"log group: {name}" in capsys.readouterr().out
+    account.responses["logs describe-log-groups"] = {"logGroups": []}
+    assert run_main() == 0
