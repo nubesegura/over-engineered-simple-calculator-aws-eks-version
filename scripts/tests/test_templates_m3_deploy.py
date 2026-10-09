@@ -73,7 +73,7 @@ def test_project_settings(deploy: dict[str, Any]) -> None:
     assert project["TimeoutInMinutes"] == 30
     assert project["ConcurrentBuildLimit"] == 1
     assert "DataKeyAlias" in json.dumps(project["EncryptionKey"])
-    assert project["Name"] == {"Fn::Sub": "cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"}
+    assert project["Name"] == {"Fn::Sub": "cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"}
     logs = project["LogsConfig"]["CloudWatchLogs"]
     assert logs["Status"] == "ENABLED" and logs["GroupName"] == {"Ref": "BuildLogGroup"}
 
@@ -114,7 +114,7 @@ def test_role_name_matches_the_registry_policy_and_trust_is_the_service_for_this
     assert trust["Principal"] == {"Service": "codebuild.amazonaws.com"}
     assert trust["Action"] == "sts:AssumeRole"
     assert trust["Condition"]["StringEquals"]["aws:SourceArn"]["Fn::Sub"].endswith(
-        ":project/cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+        ":project/cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
     )
     assert role["MaxSessionDuration"] <= 3600
 

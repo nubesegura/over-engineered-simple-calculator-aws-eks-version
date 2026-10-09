@@ -63,7 +63,7 @@ Resources:
   BuildLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub "/aws/codebuild/cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      LogGroupName: !Sub "/aws/codebuild/cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
       RetentionInDays: !Ref LogRetentionDays
       KmsKeyId:
         Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
@@ -87,7 +87,7 @@ Resources:
             Condition:
               StringEquals:
                 aws:SourceAccount: !Ref AWS::AccountId
-                aws:SourceArn: !Sub "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:codebuild:${AWS::Region}:${AWS::AccountId}:project/cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
       Policies:
         - PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
           PolicyDocument:
@@ -206,7 +206,7 @@ Resources:
   DeployProject:
     Type: AWS::CodeBuild::Project
     Properties:
-      Name: !Sub "cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+      Name: !Sub "cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
       Description: !Sub "Runs helm and kubectl inside the VPC for ${Context} eks (${EnvType})"
       ServiceRole: !GetAtt DeployRole.Arn
       EncryptionKey:
@@ -352,7 +352,7 @@ Resources:
           GroupName: !Ref BuildLogGroup
       Tags:
         - Key: Name
-          Value: !Sub "cb-${RegionCode}-${Context}-eks-deploy-${EnvType}"
+          Value: !Sub "cbp-${RegionCode}-${Context}-eks-deploy-${EnvType}"
 
   # ---------------------------------------------------------
   # Cluster access (requirement 8.4): the only administrator entry; nothing else uses it.

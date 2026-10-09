@@ -57,14 +57,14 @@ def fake_world(cli: FakeCli, status: str) -> None:
                             "OutputKey": "SourceBucket",
                             "OutputValue": "aws-sam-cli-managed-default-samclisourcebucket-abc",
                         },
-                        {"OutputKey": "ProjectName", "OutputValue": "cb-useast2-oecalc-eks-deploy-dev"},
+                        {"OutputKey": "ProjectName", "OutputValue": "cbp-useast2-oecalc-eks-deploy-dev"},
                     ],
                 }
             ]
         },
     )
     cli.on("s3 cp", Reply())
-    cli.on("codebuild start-build", {"build": {"id": "cb-useast2-oecalc-eks-deploy-dev:1"}})
+    cli.on("codebuild start-build", {"build": {"id": "cbp-useast2-oecalc-eks-deploy-dev:1"}})
     cli.on(
         "codebuild batch-get-builds",
         {"builds": [{"buildStatus": status, "logs": {"groupName": "g", "streamName": "s"}}]},

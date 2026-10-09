@@ -76,7 +76,7 @@ GitHub Actions --OIDC--> CodeBuild (in the VPC) --> private EKS API (helm, kubec
 | 27 | Access entries | `AWS::EKS::AccessEntry` | (CodeBuild role, bastion role) | Admin for deployment, view for the owner | Both | cluster, bastion |
 | 28 | Pod identity associations and roles | `AWS::EKS::PodIdentityAssociation`, `AWS::IAM::Role` | `iamr-useast2-oecalc-eks-<workload>-<env>` for `lbc`, `autoscaler`, `calc` (add, sub, mul, div), `history`, `ingest`, `migrate` | Least privilege per workload | Both | cluster |
 | 29 | Cluster log group | `AWS::Logs::LogGroup` | `/aws/eks/eksc-useast2-oecalc-<env>/cluster` | Control plane logs, CMK, 14 days dev, 90 prod | Both | cluster |
-| 30 | CodeBuild project, role, log group, SG | `AWS::CodeBuild::Project` | `cb-useast2-oecalc-eks-deploy-<env>` | In the VPC; runs helm, kubectl, migration trigger, SSM publication | Both | deploy |
+| 30 | CodeBuild project, role, log group, SG | `AWS::CodeBuild::Project` | `cbp-useast2-oecalc-eks-deploy-<env>` | In the VPC; runs helm, kubectl, migration trigger, SSM publication | Both | deploy |
 | 31 | Bastion instance, role, profile, SG, session log group, session preferences | `AWS::EC2::Instance`, `AWS::SSM::Document` | `ec2-useast2-oecalc-eks-bastion-<env>` | Session Manager only, read-only kubectl | dev (parameter) | bastion |
 | 32 | Helm release: AWS Load Balancer Controller | Helm | `aws-load-balancer-controller` (namespace `kube-system`) | Creates the ALB from the Ingress | Both | Helm |
 | 33 | Helm release: Cluster Autoscaler | Helm | `cluster-autoscaler` (namespace `kube-system`) | Scales the node group | Both | Helm |
