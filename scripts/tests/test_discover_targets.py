@@ -51,6 +51,18 @@ def test_dimensions_are_found_by_tag_and_filtered_by_the_cluster(cli: FakeCli) -
     assert "Key=elbv2.k8s.aws/cluster,Values=cluster-a" in cli.called(TAGGING)[0]
 
 
+def test_the_preflight_target_groups_of_the_second_ingress_are_ignored(cli: FakeCli) -> None:
+    resources = everything()
+    resources["ResourceTagMappingList"] += [
+        target_group(name, ingress="calculator-preflight", suffix=f"{i:016x}")
+        for i, name in enumerate(script.WORKLOADS)
+    ]
+    cli.on(ASG, groups("eks-eksng-useast2-oecalc-dev-1234"))
+    cli.on(TAGGING, resources)
+    values = script.discover("cluster-a")
+    assert values["TargetGroupAdd"] == target_group("add")["ResourceARN"].split(":")[-1]
+
+
 def test_a_workload_is_matched_by_the_end_of_the_service_name_not_a_substring() -> None:
     assert script.owns_workload("calculator/calculator-api-add:8443", "add")
     assert not script.owns_workload("calculator/calculator-api-address:8443", "add")

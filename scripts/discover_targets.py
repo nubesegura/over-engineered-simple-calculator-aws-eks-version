@@ -33,6 +33,7 @@ from typing import Any
 WORKLOADS = ("add", "sub", "mul", "div", "history")
 CLUSTER_TAG = "elbv2.k8s.aws/cluster"
 RESOURCE_TAG = "ingress.k8s.aws/resource"
+API_INGRESS_PREFIX = "calculator/calculator-api-"
 ASG_TAG = "eks:cluster-name"
 GROUP_METRIC = "GroupInServiceInstances"
 
@@ -71,9 +72,13 @@ def dimension(arn: str, kind: str) -> str:
 
 
 def owns_workload(resource_tag: str, workload: str) -> bool:
-    """The LBC tag is `<namespace>/<ingress>-<service>:<port>`; match the service at the end, not a substring."""
-    service = resource_tag.rpartition(":")[0] if ":" in resource_tag else resource_tag
-    return service.endswith(f"-{workload}")
+    """The LBC tag is `<namespace>/<ingress>-<service>:<port>`.
+
+    Two Ingress objects share the load balancer and each one gets its own target group per service (the
+    unauthenticated preflight one and the authenticated one). The alarm watches the authenticated one, which
+    serves the real traffic; the service name must match exactly, not as a substring.
+    """
+    return resource_tag.rpartition(":")[0] == f"{API_INGRESS_PREFIX}{workload}"
 
 
 def find_load_balancer_and_target_groups(cluster: str, resources: dict[str, Any]) -> dict[str, str]:
@@ -99,8 +104,8 @@ def find_load_balancer_and_target_groups(cluster: str, resources: dict[str, Any]
         matches = sorted(set(target_groups[name]))
         if len(matches) != 1:
             raise DiscoveryError(
-                f"{len(matches)} target groups for the {name} service (tag {RESOURCE_TAG} ending in -{name});"
-                " expected one"
+                f"{len(matches)} target groups for the {name} service"
+                f" (tag {RESOURCE_TAG} = {API_INGRESS_PREFIX}{name}); expected one"
             )
         found[f"TargetGroup{name.capitalize()}"] = matches[0]
     return found
