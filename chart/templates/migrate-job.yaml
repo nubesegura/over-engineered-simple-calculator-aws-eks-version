@@ -1,0 +1,58 @@
+{{- if .Values.migrate.enabled }}
+{{- /*
+Schema migration, once per deployment: the name carries the run id (or the release revision). Connects with the
+master secret directly to the instance; runs with the migrate identity. Not a hook, because the namespace and
+the service account must exist first.
+*/}}
+{{- $m := .Values.migrate }}
+{{- $runId := default (toString .Release.Revision) $m.runId | toString }}
+{{- if not (regexMatch "^[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?$" $runId) }}
+{{- fail (printf "migrate.runId %q must be a short lowercase DNS label" $runId) }}
+{{- end }}
+{{- $name := printf "migrate-%s" $runId }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $name }}
+  namespace: {{ include "calc.namespace" . }}
+  labels:
+    {{- include "calc.labels" (dict "root" . "name" "migrate" "component" "migrate") | nindent 4 }}
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ $m.ttlSecondsAfterFinished }}
+  activeDeadlineSeconds: {{ $m.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "calc.labels" (dict "root" . "name" "migrate" "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ $m.serviceAccount }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        {{- include "calc.podSecurityContext" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "calc.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - migrate
+          env:
+            {{- include "calc.env" . | nindent 12 }}
+            - name: MASTER_SECRET_ARN
+              value: {{ required "app.masterSecretArn is required for the migrate job" .Values.app.masterSecretArn | quote }}
+            - name: DB_INSTANCE_HOST
+              value: {{ required "app.dbInstanceHost is required for the migrate job" .Values.app.dbInstanceHost | quote }}
+          resources:
+            {{- include "calc.resources" (dict "root" . "profile" $m.profile) | nindent 12 }}
+          securityContext:
+            {{- include "calc.containerSecurityContext" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.tmpSizeLimit }}
+{{- end }}

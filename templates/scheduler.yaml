@@ -61,6 +61,20 @@ Resources:
       KmsKeyId:
         Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyArn"
 
+  # "true" makes the 22:00 shutdown skip the NAT gateway removal until a later shutdown reads "false"; written by the
+  # Keep NAT workflow or by hand. Created as "false". CloudFormation updates a parameter only when its template
+  # properties change, so a value set by the owner survives later deployments: DO NOT edit Value or Type here (that
+  # would reset it). There is no "ignore on update" attribute, which is why the parameter lives in the template
+  # (tags, deletion with the stack) instead of being created by the function.
+  KeepNatParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/${Context}/${EnvType}/eks/nat-keep-up"
+      Type: String
+      Tier: Standard
+      Description: Set to true to skip the nightly NAT shutdown until a later one reads false (default false)
+      Value: "false"
+
   # ---------------------------------------------------------
   # Function role: this NAT gateway, this route table, tagging and its own logs only (D20)
   # ---------------------------------------------------------
@@ -147,6 +161,10 @@ Resources:
               - logs:CreateLogStream
               - logs:PutLogEvents
             Resource: !Sub "${FunctionLogGroup.Arn}:*"
+          - Sid: ReadTheKeepNatParameter
+            Effect: Allow
+            Action: ssm:GetParameter
+            Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter${KeepNatParameter}"
           - Sid: PublishFailuresToTheAlertsTopic
             Effect: Allow
             Action: sns:Publish
@@ -188,6 +206,7 @@ Resources:
             Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:PrivateRouteTableId"
           EIP_ALLOCATION_ID:
             Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:NatEipAllocationId"
+          KEEP_UP_PARAMETER: !Ref KeepNatParameter
           NAME_TAG: !Sub "nat-${RegionCode}-${Context}-eks-${EnvType}"
           TAGS_JSON: !Sub '{"app-name":"${TagAppName}","env-type":"${EnvType}","project-name":"${TagProjectName}","repo-name":"${TagRepoName}","team-owner":"${TagTeamOwner}"}'
       LoggingConfig:

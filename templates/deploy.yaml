@@ -149,6 +149,11 @@ Resources:
                 Effect: Allow
                 Action: ssm:GetParameter
                 Resource: !Sub "arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/${Context}/${EnvType}/api-certificate-arn"
+              # scripts/helm_deploy.sh resolves the database, security and network outputs of this project's stacks.
+              - Sid: ReadProjectStackOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/stk-${RegionCode}-${Context}-eks-*-${EnvType}/*"
               # Read-only lookups of the load balancer the Ingress creates (waiting for it, destroy checks).
               - Sid: DescribeLoadBalancers
                 Effect: Allow

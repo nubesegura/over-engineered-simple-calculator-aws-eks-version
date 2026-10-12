@@ -1,0 +1,169 @@
+# Values of the calculator chart, identical for every environment. Per-environment values are in
+# values-dev.yaml and values-prod.yaml. Values that only exist after the stacks are deployed (ARNs, endpoints,
+# ids, the image digest) are empty here: the deployment script passes them with --set and the templates stop
+# with a clear message when one is missing. No value in this chart is a secret.
+
+# "dev" or "prod"; also the env-type tag of the load balancer
+envType: ""
+
+# The release is installed in this namespace (release name: calculator). The chart stops if they differ.
+namespace:
+  name: calculator
+  create: true
+
+region: us-east-2
+
+image:
+  repository: ""   # ECR repository URI, set by the deployment
+  digest: ""       # sha256:<64 hex>, set by the deployment; tags are never used
+  pullPolicy: IfNotPresent
+
+# Mandatory tags (constitution section 3); env-type comes from envType
+tags:
+  team-owner: nube-segura
+  project-name: over-engineered-calculator
+  app-name: calc-api
+  repo-name: over-engineered-simple-calculator-aws-eks-version
+
+# Plain (non-secret) settings of the application; the secrets are read by the pods with their pod identity
+app:
+  alertsTopicArn: ""    # SNS topic of the alerts
+  appSecretArn: ""      # secret of the limited application user
+  masterSecretArn: ""   # only for the migrate job
+  dbHost: ""            # RDS Proxy endpoint
+  dbInstanceHost: ""    # direct instance endpoint, only for the migrate job
+  dbPort: 5432
+  dbName: calculator
+  allowedOrigin: ""     # CORS origin of the page
+  logLevel: INFO
+  sslRootCert: /app/rds-global-bundle.pem
+
+# Secret with the signing key of the history cursors (JSON key cursor_key); read only by the history pod
+cursor:
+  secretArn: ""
+
+network:
+  vpcCidr: ""           # source of the load balancer and destination of the proxy; set per environment
+  databasePort: 5432
+  podIdentityAgentIp: 169.254.170.23   # EKS Pod Identity agent (credentials of the pods), HTTP port 80
+
+service:
+  port: 8443
+
+# Pod security context shared by every pod. The user id must be the one of the image (src/backend/Dockerfile).
+securityContext:
+  runAsUser: 10001
+  runAsGroup: 10001
+
+tmpSizeLimit: 64Mi
+
+probes:
+  path: /health
+  readiness:
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+    failureThreshold: 3
+  liveness:
+    initialDelaySeconds: 20
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+
+topologySpread:
+  maxSkew: 1
+  whenUnsatisfiable: ScheduleAnyway
+
+replicaCount: 1
+
+# Requests and limits by profile; environments override only the numbers that differ.
+resourceProfiles:
+  calc:
+    requests: {cpu: 100m, memory: 128Mi}
+    limits: {cpu: 500m, memory: 256Mi}
+  history:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 250m, memory: 256Mi}
+  migrate:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 250m, memory: 256Mi}
+
+# Service accounts that exist. No annotations: EKS Pod Identity associations (cluster stack) need none.
+serviceAccounts:
+  - calc
+  - history
+  - migrate
+
+# HTTP workloads (kind http). One template renders each into Deployment, Service and, above one replica, a
+# PodDisruptionBudget. The container argument is the workload name. A map (not a list) so that an environment
+# file can override single fields. The ingest worker is added in task 5.3.
+workloads:
+  add:
+    kind: http
+    serviceAccount: calc
+    profile: calc
+    routes: [/api/v1/add, /api/eks/v1/add]
+  sub:
+    kind: http
+    serviceAccount: calc
+    profile: calc
+    routes: [/api/v1/sub, /api/eks/v1/sub]
+  mul:
+    kind: http
+    serviceAccount: calc
+    profile: calc
+    routes: [/api/v1/mul, /api/eks/v1/mul]
+  div:
+    kind: http
+    serviceAccount: calc
+    profile: calc
+    routes: [/api/v1/div, /api/eks/v1/div]
+  history:
+    kind: http
+    serviceAccount: history
+    profile: history
+    routes: [/api/v1/history, /api/eks/v1/history]
+
+# Schema migration job. One Job per deployment: the name carries runId (the deployment passes its run number)
+# or, when empty, the release revision. It is not a hook: it needs the namespace and the service account.
+migrate:
+  enabled: true
+  serviceAccount: migrate
+  profile: migrate
+  runId: ""
+  ttlSecondsAfterFinished: 3600
+  activeDeadlineSeconds: 900
+
+quota:
+  pods: "40"
+  requestsCpu: "3"
+  requestsMemory: 4Gi
+  limitsCpu: "8"
+  limitsMemory: 8Gi
+
+# Maximum of one container is below what a t4g.medium node can give (2 vCPU, 4 GiB)
+limitRange:
+  default: {cpu: 250m, memory: 256Mi}
+  defaultRequest: {cpu: 50m, memory: 64Mi}
+  min: {cpu: 10m, memory: 16Mi}
+  max: {cpu: "1", memory: 1Gi}
+
+ingress:
+  className: alb
+  groupName: calculator-api
+  # The preflight rule is evaluated first (smaller order wins)
+  preflightOrder: 10
+  authOrder: 20
+  sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+  certificateArn: ""      # shared API certificate, resolved from SSM by the deployment script
+  securityGroupId: ""     # load balancer security group of the network stack (rules to the pods already exist)
+  wafAclArn: ""           # regional web ACL; only set in prod
+  wafRequired: false      # true in prod: the render stops when the ARN is empty
+  accessLogs:
+    bucket: ""            # ALB log bucket of the storage stack
+    prefix: alb
+
+# Cognito pool of the webpage repository; issuer and keys URL are built from region and pool id
+auth:
+  userPoolId: ""
+  appClientId: ""

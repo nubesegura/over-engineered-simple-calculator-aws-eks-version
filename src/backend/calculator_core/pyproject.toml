@@ -1,0 +1,29 @@
+[project]
+name = "calculator_core"
+version = "0.1.0"
+description = "Domain, use cases, ports and adapters shared by the calculator EKS workloads"
+requires-python = ">=3.14"
+# Runtime dependencies live in requirements.txt (pinned); tools in requirements-dev.txt.
+dependencies = []
+
+[project.scripts]
+calculator = "calculator_core.config.cli:main"
+
+[build-system]
+requires = ["setuptools==84.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.mypy]
+strict = true
+ignore_missing_imports = true
+mypy_path = "src"
+packages = ["calculator_core", "tests"]
+
+[tool.pytest.ini_options]
+addopts = "--cov=calculator_core --cov-report=term-missing --cov-fail-under=85"
+testpaths = ["tests"]
+markers = ["postgres: needs a real PostgreSQL (TEST_DATABASE_URL)"]
+pythonpath = ["src"]

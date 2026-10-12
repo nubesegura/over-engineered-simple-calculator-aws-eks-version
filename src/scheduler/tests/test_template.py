@@ -117,3 +117,19 @@ def test_names_say_eks_and_stacks_come_from_the_eks_network(template: dict[str, 
             or properties.get("AlarmName")
         )
         assert "-eks-" in str(label)
+
+
+def test_keep_nat_parameter_is_created_false_and_read_by_the_function(template: dict[str, Any]) -> None:
+    resource = template["Resources"]["KeepNatParameter"]
+    assert resource["Type"] == "AWS::SSM::Parameter"
+    properties = resource["Properties"]
+    assert properties["Value"] == "false"  # literal: changing it would reset the owner's value
+    assert properties["Type"] == "String"
+    assert properties["Tier"] == "Standard"
+    assert "eks/nat-keep-up" in str(properties["Name"])
+    statement = next(s for s in _statements(template) if s["Sid"] == "ReadTheKeepNatParameter")
+    assert statement["Action"] == "ssm:GetParameter"
+    assert "KeepNatParameter" in str(statement["Resource"])
+    function = template["Resources"]["NatSchedulerFunction"]["Properties"]
+    assert function["Environment"]["Variables"]["KEEP_UP_PARAMETER"] == {"Fn::Ref": "KeepNatParameter"}
+    assert not any("ssm:Put" in str(s["Action"]) for s in _statements(template))

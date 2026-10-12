@@ -20,6 +20,9 @@ env:
   HELM_VERSION: "v3.22.0"
   # linux-amd64 (runner) archive; the build project pins the linux-arm64 one (f14e804d...) from the same release
   HELM_AMD64_SHA256: "1e4ab49e429626cf6c6958d914248b78c9730803c2751b87627e171dc800e7bb"
+  PIP_AUDIT_VERSION: "2.10.1"
+  # postgres:17.11 pinned by the digest of its multi-architecture manifest (resolved from Docker Hub, 2026-10)
+  POSTGRES_IMAGE: "postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3"
 
 jobs:
   iac:
@@ -95,14 +98,229 @@ jobs:
           mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/nat_window.py scripts/tests scripts/package_rotation.py
           (cd src/scheduler && mypy app.py)
 
-  # PLACEHOLDER (task 4.1): Python core job (ruff, ruff format --check, mypy strict, lint-imports, pytest with
-  # coverage at least 85 percent, pip-audit) for src/backend/calculator_core and the Lambda packages.
-  #
-  # python:
-  #   name: Python (lint, types, layering, tests)
+  python-core:
+    name: Python core (lint, types, layering, tests with PostgreSQL, audit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: src/backend/calculator_core
+    services:
+      postgres:
+        # Same image as POSTGRES_IMAGE above (service images cannot read the workflow env).
+        image: postgres:17.11@sha256:2d2b8998d31037bf721cfdf764d76ba74171b4fab3431b7f72c27c56ddbdf9e3
+        env:
+          # The tests read pg_authid and use SET ROLE: they need the SUPERUSER of the service (postgres).
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-only-password # throwaway database of this job; nothing real
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/postgres
+      PYTHONPATH: src
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-  # PLACEHOLDER (tasks 4.6 and 3.7): Helm job (helm lint, helm template for dev and prod, chart render tests,
-  # schema validation and policy scan) for chart/ and chart-addons/.
-  #
-  # helm:
-  #   name: Helm (lint, render, policy)
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: src/backend/calculator_core/requirements-dev.txt
+
+      - name: Install dependencies (pinned)
+        run: python -m pip install --disable-pip-version-check -r requirements-dev.txt
+
+      - name: Ruff (lint and format)
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Mypy (strict)
+        run: mypy
+
+      - name: Layering (import-linter)
+        run: lint-imports
+
+      - name: Tests (coverage at least 85 percent, PostgreSQL service)
+        run: python -m pytest -q
+
+      # The tests marked postgres skip themselves without TEST_DATABASE_URL; a skipped test here would hide a broken
+      # service, so the job fails unless every one of them ran and passed.
+      - name: Fail if the PostgreSQL tests were skipped
+        run: |
+          set -o pipefail
+          python -m pytest -m postgres -rs -q --no-cov -p no:cacheprovider | tee "$RUNNER_TEMP/postgres-tests.txt"
+          if grep -qi "skipped" "$RUNNER_TEMP/postgres-tests.txt"; then
+            echo "::error::The PostgreSQL tests were skipped: TEST_DATABASE_URL or the service is not working"
+            exit 1
+          fi
+          grep -qE "[0-9]+ passed" "$RUNNER_TEMP/postgres-tests.txt" || { echo "::error::No PostgreSQL test passed"; exit 1; }
+
+      - name: Consistent dependencies (pip check)
+        run: python -m pip check
+
+      # pip-audit is pinned to the job (its own dependencies are not hash-locked, so the tool itself is not fully
+      # reproducible). It fails on any known vulnerability of the pinned runtime requirements: it cannot filter
+      # by severity, and a finding is reviewed by the owner instead of waved through.
+      - name: Audit runtime dependencies (pip-audit)
+        run: |
+          python -m pip install --disable-pip-version-check "pip-audit==${PIP_AUDIT_VERSION}"
+          pip-audit -r requirements.txt --no-deps --disable-pip --strict
+
+  chart:
+    name: Chart (helm lint, render tests, types)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: scripts/requirements-dev.txt
+
+      - name: Install tooling (pinned)
+        run: python -m pip install --disable-pip-version-check -r scripts/requirements-dev.txt
+
+      - name: Install helm (pinned, checksum verified)
+        run: |
+          set -euo pipefail
+          curl -fsSL -o "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          echo "${HELM_AMD64_SHA256}  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP" linux-amd64/helm
+          sudo install -m 0755 "$RUNNER_TEMP/linux-amd64/helm" /usr/local/bin/helm
+          helm version --short
+
+      # Placeholder values only (chart/README.md lists the ones a deployment passes); prod also needs the WAF ARN.
+      - name: Helm lint (dev and prod)
+        run: |
+          set -euo pipefail
+          for env in dev prod; do
+            extra=()
+            if [ "$env" = "prod" ]; then
+              extra+=(--set-string "ingress.wafAclArn=arn:aws:wafv2:us-east-2:000000000000:regional/webacl/example/00000000-0000-0000-0000-000000000000")
+            fi
+            helm lint chart -f "chart/values-${env}.yaml" --namespace calculator \
+              --set-string image.repository=registry.example.invalid/calc/app \
+              --set-string "image.digest=sha256:$(printf 'a%.0s' {1..64})" \
+              --set-string app.alertsTopicArn=arn:aws:sns:us-east-2:000000000000:example-alerts \
+              --set-string app.appSecretArn=arn:aws:secretsmanager:us-east-2:000000000000:secret:example-app \
+              --set-string app.masterSecretArn=arn:aws:secretsmanager:us-east-2:000000000000:secret:example-master \
+              --set-string app.dbHost=proxy.example.invalid \
+              --set-string app.dbInstanceHost=instance.example.invalid \
+              --set-string ingress.certificateArn=arn:aws:acm:us-east-2:000000000000:certificate/example \
+              --set-string ingress.securityGroupId=sg-0123456789abcdef0 \
+              --set-string ingress.accessLogs.bucket=example-alb-logs \
+              --set-string auth.userPoolId=us-east-2_ExamplePool \
+              --set-string auth.appClientId=exampleclientid123 \
+              "${extra[@]}"
+          done
+
+      - name: Chart tests (helm on PATH, none skipped)
+        run: |
+          set -o pipefail
+          python -m pytest chart/tests -q -rs | tee "$RUNNER_TEMP/chart-tests.txt"
+          if grep -qi "skipped" "$RUNNER_TEMP/chart-tests.txt"; then
+            echo "::error::Chart tests were skipped: helm is not working on the runner"
+            exit 1
+          fi
+
+      - name: Ruff and mypy on the chart tests
+        run: |
+          ruff check --config src/scheduler/pyproject.toml chart/tests
+          ruff format --config src/scheduler/pyproject.toml --check chart/tests
+          mypy --config-file src/scheduler/pyproject.toml chart/tests
+
+  image:
+    name: Image (build, non-root, dispatcher, health)
+    needs: python-core
+    # The image is linux/arm64 (Graviton nodes); the x86 runner builds and runs it under QEMU emulation.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      IMAGE: calculator-ci:${{ github.sha }}
+      DOCKER_BUILDKIT: "1"
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check that the Dockerfile exists
+        id: dockerfile
+        run: |
+          if [ -f src/backend/Dockerfile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::src/backend/Dockerfile does not exist (task 4.5): the image checks are skipped"
+          fi
+
+      - name: Set up QEMU (arm64)
+        if: steps.dockerfile.outputs.present == 'true'
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        if: steps.dockerfile.outputs.present == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Nothing is pushed to a registry from CI; the image stays on the runner. The build downloads the RDS CA
+      # bundle from truststore.pki.rds.amazonaws.com (validated by src/rotation/package_bundle.py).
+      - name: Build the image
+        if: steps.dockerfile.outputs.present == 'true'
+        run: |
+          docker buildx build --load --platform linux/arm64 --build-context rotation=src/rotation             -f src/backend/Dockerfile --tag "$IMAGE" src/backend
+
+      - name: The image runs as uid 10001 and gid 10001 (non-root)
+        if: steps.dockerfile.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          ids=$(docker run --rm --platform linux/arm64 --entrypoint id "$IMAGE")
+          echo "Image user: $ids"
+          case "$ids" in
+            uid=10001*gid=10001*) ;;
+            *) echo "::error::The image must run as uid=10001 gid=10001"; exit 1 ;;
+          esac
+
+      - name: The dispatcher refuses unknown and unavailable commands
+        if: steps.dockerfile.outputs.present == 'true'
+        run: |
+          set -uo pipefail
+          docker run --rm --platform linux/arm64 "$IMAGE" nonsense 2> "$RUNNER_TEMP/unknown.txt"; rc=$?
+          cat "$RUNNER_TEMP/unknown.txt"
+          [ "$rc" -eq 2 ] && grep -q "Usage: calculator" "$RUNNER_TEMP/unknown.txt" || { echo "::error::An unknown command must print the usage and exit 2"; exit 1; }
+          docker run --rm --platform linux/arm64 "$IMAGE" ingest 2> "$RUNNER_TEMP/ingest.txt"; rc=$?
+          cat "$RUNNER_TEMP/ingest.txt"
+          [ "$rc" -eq 2 ] && grep -q "not available" "$RUNNER_TEMP/ingest.txt" || { echo "::error::ingest must exit 2 with a clear message until task 5.2"; exit 1; }
+
+      # The pod settings of the chart, with fake values: the connection pool opens in the background, so /health
+      # answers without a reachable database or AWS. Read-only root filesystem and one writable /tmp, as in the cluster.
+      - name: The service starts and answers /health
+        if: steps.dockerfile.outputs.present == 'true'
+        run: |
+          set -euo pipefail
+          docker run --detach --name calculator-add --platform linux/arm64 --read-only --tmpfs /tmp:rw,noexec,nosuid,uid=10001,gid=10001             --publish 8443:8443             --env AWS_REGION=us-east-2 --env ENVIRONMENT=ci             --env ALERTS_TOPIC_ARN=arn:aws:sns:us-east-2:000000000000:example-alerts             --env APP_SECRET_ARN=arn:aws:secretsmanager:us-east-2:000000000000:secret:example-app             --env DB_HOST=db.example.invalid --env DB_NAME=calculator             --env ALLOWED_ORIGIN=https://example.invalid             --env SSL_ROOT_CERT=/app/rds-global-bundle.pem             "$IMAGE" add
+          code=000
+          for _ in $(seq 1 30); do
+            code=$(curl -ksS -o "$RUNNER_TEMP/health.json" -w '%{http_code}' https://localhost:8443/health || true)
+            [ "$code" = "200" ] && break
+            sleep 2
+          done
+          echo "GET /health -> $code"
+          cat "$RUNNER_TEMP/health.json" || true; echo
+          if [ "$code" != "200" ]; then docker logs calculator-add; echo "::error::/health did not answer 200"; exit 1; fi
+          python3 -m json.tool "$RUNNER_TEMP/health.json" > /dev/null
+
+      - name: Stop the container
+        if: ${{ always() && steps.dockerfile.outputs.present == 'true' }}
+        run: docker rm --force calculator-add || true

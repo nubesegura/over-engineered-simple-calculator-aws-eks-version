@@ -1,0 +1,123 @@
+{{- /*
+One template for every HTTP workload (add, sub, mul, div, history): Deployment, Service and, above one replica,
+a PodDisruptionBudget. The container argument selects the workload of the single image.
+*/}}
+{{- $ns := include "calc.namespace" . }}
+{{- $image := include "calc.image" . }}
+{{- range $name, $w := .Values.workloads }}
+{{- if eq $w.kind "http" }}
+{{- if not (has $w.serviceAccount $.Values.serviceAccounts) }}
+{{- fail (printf "workload %s uses the unknown service account %s" $name $w.serviceAccount) }}
+{{- end }}
+{{- $replicas := int (default $.Values.replicaCount $w.replicas) }}
+{{- $selector := dict "root" $ "name" $name }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" $ "name" $name "component" "api") | nindent 4 }}
+spec:
+  replicas: {{ $replicas }}
+  revisionHistoryLimit: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "calc.selectorLabels" $selector | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "calc.labels" (dict "root" $ "name" $name "component" "api") | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $w.serviceAccount }}
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- include "calc.podSecurityContext" $ | nindent 8 }}
+      topologySpreadConstraints:
+        - maxSkew: {{ $.Values.topologySpread.maxSkew }}
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: {{ $.Values.topologySpread.whenUnsatisfiable }}
+          labelSelector:
+            matchLabels:
+              {{- include "calc.selectorLabels" $selector | nindent 14 }}
+      containers:
+        - name: {{ $name }}
+          image: {{ $image | quote }}
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          args:
+            - {{ $name | quote }}
+          ports:
+            - name: https
+              containerPort: {{ $.Values.service.port }}
+              protocol: TCP
+          env:
+            {{- include "calc.env" $ | nindent 12 }}
+            {{- if eq $name "history" }}
+            - name: CURSOR_KEY_SECRET_ARN
+              value: {{ required "cursor.secretArn is required for the history workload" $.Values.cursor.secretArn | quote }}
+            {{- end }}
+          readinessProbe:
+            httpGet:
+              path: {{ $.Values.probes.path }}
+              port: https
+              scheme: HTTPS
+            {{- toYaml $.Values.probes.readiness | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: {{ $.Values.probes.path }}
+              port: https
+              scheme: HTTPS
+            {{- toYaml $.Values.probes.liveness | nindent 12 }}
+          resources:
+            {{- include "calc.resources" (dict "root" $ "profile" $w.profile) | nindent 12 }}
+          securityContext:
+            {{- include "calc.containerSecurityContext" $ | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ $.Values.tmpSizeLimit }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" $ "name" $name "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "calc.selectorLabels" $selector | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ $.Values.service.port }}
+      targetPort: https
+      protocol: TCP
+{{- if gt $replicas 1 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" $ "name" $name "component" "api") | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "calc.selectorLabels" $selector | nindent 6 }}
+{{- end }}
+{{- end }}
+{{- end }}

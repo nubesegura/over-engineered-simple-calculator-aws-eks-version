@@ -1,0 +1,23 @@
+# Environment values: prod. Placeholders are overridden by the deployment script (--set); no account ids here.
+envType: prod
+
+# Two replicas spread across the zones, so the PodDisruptionBudget applies
+replicaCount: 2
+
+app:
+  allowedOrigin: https://prod.example.invalid
+  logLevel: INFO
+
+network:
+  vpcCidr: 10.31.0.0/16   # parameters/prod.json VpcCidr
+
+resourceProfiles:
+  calc:
+    limits: {cpu: "1", memory: 512Mi}
+  history:
+    limits: {cpu: 500m, memory: 384Mi}
+
+# Regional web ACL attached to the load balancer; the deployment script sets the ARN (WafAclArn parameter)
+ingress:
+  wafRequired: true
+  wafAclArn: ""

@@ -102,3 +102,104 @@ def test_run_fails_when_the_build_does_not_succeed(archive_dir: Path, cli: FakeC
 def test_command_is_restricted_to_the_allow_list() -> None:
     with pytest.raises(SystemExit):
         rdb.main(["run", "--env", "dev", "--command", "rm -rf"])
+
+
+# --------------------------------------------------------------------------- build overrides (command deploy)
+DIGEST = "sha256:" + "a" * 64
+DEPLOY_ENV = {
+    "IMAGE_DIGEST": DIGEST,
+    "RUN_ID": "r12345",
+    "WEB_ORIGIN": "https://page.example.invalid",
+    "COGNITO_USER_POOL_ID": "us-east-2_ExamplePool",
+    "COGNITO_APP_CLIENT_ID": "exampleclientid123",
+    "WAF_ACL_ARN": "",
+    "ACCESS_LOG_BUCKET": "",
+}
+ALL_NAMES = list(DEPLOY_ENV)
+
+
+def deploy_args() -> list[str]:
+    args = ["run", "--env", "dev", "--command", "deploy"]
+    for name in ALL_NAMES:
+        args += ["--pass", name]
+    return args
+
+
+def test_allow_list_has_no_way_to_override_the_source_or_the_command() -> None:
+    assert "SOURCE_SHA256" not in rdb.PASSTHROUGH_ALLOWED and "DEPLOY_COMMAND" not in rdb.PASSTHROUGH_ALLOWED
+    with pytest.raises(DeployError, match="not allowed"):
+        rdb.build_overrides("deploy", [*ALL_NAMES, "SOURCE_SHA256"], {**DEPLOY_ENV, "SOURCE_SHA256": "x"})
+    with pytest.raises(SystemExit):
+        rdb.main(["run", "--env", "dev", "--command", "deploy", "--pass", "DEPLOY_COMMAND"])
+
+
+def test_optional_empty_values_are_left_out() -> None:
+    overrides = rdb.build_overrides("deploy", ALL_NAMES, DEPLOY_ENV)
+    assert {o["name"] for o in overrides} == set(rdb.PASSTHROUGH_REQUIRED)
+    with_waf = rdb.build_overrides("deploy", ALL_NAMES, {**DEPLOY_ENV, "WAF_ACL_ARN": "arn:x"})
+    assert "WAF_ACL_ARN" in {o["name"] for o in with_waf}
+
+
+@pytest.mark.parametrize("name", rdb.PASSTHROUGH_REQUIRED)
+def test_empty_required_value_fails_without_printing_it(name: str) -> None:
+    with pytest.raises(DeployError, match=f"{name} is empty"):
+        rdb.build_overrides("deploy", ALL_NAMES, {**DEPLOY_ENV, name: "  "})
+
+
+def test_deploy_needs_every_required_name_to_be_passed() -> None:
+    with pytest.raises(DeployError, match="needs IMAGE_DIGEST"):
+        rdb.build_overrides("deploy", [n for n in ALL_NAMES if n != "IMAGE_DIGEST"], DEPLOY_ENV)
+    assert rdb.build_overrides("addons", [], {}) == []
+
+
+@pytest.mark.parametrize(
+    ("name", "bad"),
+    [
+        ("IMAGE_DIGEST", "latest"),
+        ("IMAGE_DIGEST", "sha256:abc"),
+        ("RUN_ID", "Run_1"),
+        ("WEB_ORIGIN", "http://page.example.invalid"),
+        ("WEB_ORIGIN", "https://page.example.invalid/path"),
+    ],
+)
+def test_formats_are_checked_and_the_value_is_not_echoed(name: str, bad: str) -> None:
+    with pytest.raises(DeployError) as error:
+        rdb.build_overrides("deploy", ALL_NAMES, {**DEPLOY_ENV, name: bad})
+    assert bad not in str(error.value)
+
+
+def test_deploy_run_passes_the_digest_and_never_logs_values(
+    archive_dir: Path, cli: FakeCli, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    summary = archive_dir / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    for name, value in DEPLOY_ENV.items():
+        monkeypatch.setenv(name, value)
+    fake_world(cli, "SUCCEEDED")
+    assert rdb.main(deploy_args()) == 0
+    start = cli.called("codebuild start-build")[0]
+    values = {o["name"]: o["value"] for o in json.loads(start[start.index("--environment-variables-override") + 1])}
+    assert values["IMAGE_DIGEST"] == DIGEST and values["DEPLOY_COMMAND"] == "deploy"
+    assert values["WEB_ORIGIN"] == DEPLOY_ENV["WEB_ORIGIN"] and "WAF_ACL_ARN" not in values
+    out = capsys.readouterr().out + summary.read_text(encoding="utf-8")
+    assert DIGEST in out  # the digest is public and goes to the summary
+    for private in ("exampleclientid123", "us-east-2_ExamplePool", "page.example.invalid"):
+        assert private not in out
+
+
+def test_empty_required_value_stops_before_anything_is_uploaded(
+    archive_dir: Path, cli: FakeCli, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name, value in {**DEPLOY_ENV, "COGNITO_USER_POOL_ID": ""}.items():
+        monkeypatch.setenv(name, value)
+    fake_world(cli, "SUCCEEDED")
+    assert rdb.main(deploy_args()) == 1
+    assert not cli.called("s3 cp") and not cli.called("codebuild start-build")
+
+
+def test_source_archive_includes_the_chart_and_is_deterministic(archive_dir: Path) -> None:
+    first_path, first = rdb.build_archive(target=archive_dir / "a.zip")
+    names = zipfile.ZipFile(first_path).namelist()
+    assert "chart/Chart.yaml" in names and "scripts/helm_deploy.sh" in names
+    assert not any(n.startswith("chart/tests") for n in names)
+    assert rdb.build_archive(target=archive_dir / "b.zip")[1] == first

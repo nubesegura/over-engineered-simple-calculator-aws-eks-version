@@ -554,7 +554,7 @@ def empty_bucket(bucket: str) -> int:
         removed += len(objects)
 
 
-def invoke_nat_scheduler(stack: str, action: str) -> None:
+def invoke_nat_scheduler(stack: str, action: str, *, force: bool = False) -> None:
     """Invoke the scheduler function with action up or down and wait for it (both are idempotent)."""
     function = stack_outputs(stack)["FunctionName"]
     with tempfile.TemporaryDirectory() as scratch:
@@ -567,7 +567,9 @@ def invoke_nat_scheduler(stack: str, action: str) -> None:
                 "--function-name",
                 function,
                 "--payload",
-                json.dumps({"action": action, "wait": True}, separators=(",", ":")),
+                json.dumps(
+                    {"action": action, "wait": True, **({"force": True} if force else {})}, separators=(",", ":")
+                ),
                 "--cli-binary-format",
                 "raw-in-base64-out",
                 "--cli-read-timeout",
@@ -585,7 +587,7 @@ def invoke_nat_scheduler(stack: str, action: str) -> None:
 
 def nat_down(stack: str) -> None:
     """Remove the NAT gateway and wait until it is deleted. Succeeds when there is no NAT gateway."""
-    invoke_nat_scheduler(stack, "down")
+    invoke_nat_scheduler(stack, "down", force=True)  # ignores the keep-up parameter
     print("NAT gateway removed or already absent (scheduler invoked with action down)")
 
 

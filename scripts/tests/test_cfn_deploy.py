@@ -889,3 +889,20 @@ def test_explicit_override_wins_and_needs_no_aws_call(
 def test_templates_without_the_parameter_do_not_look_for_the_bucket(repo: Path, cli: FakeCli) -> None:
     deploy.stack_parameters("dev", repo / "templates" / "network.yaml")
     assert not cli.calls
+
+
+def test_destroy_forces_the_shutdown_but_the_deployment_up_does_not(repo: Path, cli: FakeCli) -> None:
+    deployed_world(cli)
+    assert deploy.main(["destroy", "--env", "dev", "--mode", "destroy"]) == 0
+    payload = cli.called("lambda invoke")[0]
+    assert json.loads(payload[payload.index("--payload") + 1]) == {"action": "down", "wait": True, "force": True}
+
+
+def test_up_payload_has_no_force(repo: Path, cli: FakeCli) -> None:
+    World(cli, {"stk-useast2-oecalc-eks-scheduler-dev": "CREATE_COMPLETE"}).outputs[
+        "stk-useast2-oecalc-eks-scheduler-dev"
+    ] = {"FunctionName": "f"}
+    cli.on("lambda invoke", Reply("None\n"))
+    deploy.nat_up("stk-useast2-oecalc-eks-scheduler-dev")
+    payload = cli.called("lambda invoke")[0]
+    assert json.loads(payload[payload.index("--payload") + 1]) == {"action": "up", "wait": True}

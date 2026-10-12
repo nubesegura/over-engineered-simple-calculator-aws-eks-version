@@ -153,11 +153,122 @@ def test_ci_installs_pinned_helm_with_checksum_and_shellcheck() -> None:
     assert env["HELM_VERSION"] in (REPO / "templates" / "deploy.yaml").read_text(encoding="utf-8")
 
 
-def test_nat_window_preflight_runs_before_any_aws_step_and_has_an_override() -> None:
+def test_nat_window_preflight_runs_after_the_account_check_and_has_an_override() -> None:
     deploy = load("deploy.yml")
     names = [step.get("name") for step in steps(deploy)]
-    assert names.index("NAT window preflight") < names.index("Configure AWS Credentials")
+    # it reads the keep-up SSM parameter, so it needs the verified credentials; no stack is touched before it
+    assert names.index("Verify target AWS account") < names.index("NAT window preflight")
+    assert names.index("NAT window preflight") < names.index("Owner guard (CloudFormation only)")
     override = triggers(deploy)["workflow_call"]["inputs"]["ignore_nat_window"]
     assert override["type"] == "boolean" and override["default"] is False
     dispatch = triggers(load("deploy-dev.yml"))["workflow_dispatch"]["inputs"]["ignore_nat_window"]
     assert dispatch["type"] == "boolean" and dispatch["default"] is False
+
+
+def test_ci_has_the_application_jobs_with_postgres_and_the_skip_guard() -> None:
+    ci = load("ci.yml")
+    assert {"iac", "python-core", "chart", "image"} <= set(ci["jobs"])
+    assert ci["permissions"] == {"contents": "read"}
+    core = ci["jobs"]["python-core"]
+    postgres = core["services"]["postgres"]
+    assert re.fullmatch(r"postgres:17\.\d+@sha256:[0-9a-f]{64}", postgres["image"])
+    assert "--health-cmd" in postgres["options"]
+    assert core["env"]["TEST_DATABASE_URL"].startswith("postgresql://postgres:")  # superuser of the service
+    assert postgres["env"]["POSTGRES_USER"] == "postgres"
+    runs = "\n".join(step.get("run", "") for step in core["steps"])
+    for command in ("ruff check", "ruff format --check", "mypy", "lint-imports", "pytest -q", "pip check", "pip-audit"):
+        assert command in runs
+    guard = next(step for step in core["steps"] if "skipped" in step.get("name", "").lower())
+    assert "-m postgres" in guard["run"] and "--no-cov" in guard["run"] and "exit 1" in guard["run"]
+
+
+def test_ci_chart_and_image_jobs() -> None:
+    ci = load("ci.yml")
+    chart_runs = "\n".join(step.get("run", "") for step in ci["jobs"]["chart"]["steps"])
+    assert "helm lint chart" in chart_runs and "sha256sum -c" in chart_runs and "pytest chart/tests" in chart_runs
+    image = ci["jobs"]["image"]
+    assert image["needs"] == "python-core"
+    image_runs = "\n".join(step.get("run", "") for step in image["steps"])
+    assert "docker buildx build --load --platform linux/arm64 --build-context rotation=src/rotation" in image_runs
+    assert "-f src/backend/Dockerfile" in image_runs
+    assert image["runs-on"] == "ubuntu-latest" and "arm" not in image["runs-on"]
+    uses = {step["uses"].split("@")[0]: step["uses"] for step in image["steps"] if "uses" in step}
+    assert uses["docker/setup-qemu-action"].startswith(
+        "docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1"
+    )
+    assert uses["docker/setup-buildx-action"].startswith(
+        "docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069"
+    )
+    assert image_runs.count("--platform linux/arm64") >= 5
+    assert "uid=10001*gid=10001*" in image_runs and "Usage: calculator" in image_runs and "/health" in image_runs
+    assert "--read-only" in image_runs and "docker rm --force" in image_runs
+    assert "ingest" in image_runs and "-eq 2" in image_runs
+    assert "docker push" not in image_runs and "login" not in image_runs
+    assert "Dockerfile" in next(s for s in image["steps"] if s.get("id") == "dockerfile")["run"]
+
+
+def step_index(workflow: dict[str, Any], name: str) -> int:
+    return [step.get("name") for step in steps(workflow)].index(name)
+
+
+def test_deploy_builds_pushes_and_deploys_in_order() -> None:
+    workflow = load("deploy.yml")
+    order = [
+        "Configure AWS Credentials",
+        "Verify target AWS account",
+        "NAT window preflight",
+        "Owner guard (CloudFormation only)",
+        "Deploy the stacks (security through bastion)",
+        "Install the cluster add-ons (CodeBuild, command addons)",
+        "Set up QEMU (arm64)",
+        "Set up Docker Buildx",
+        "Log in to the image registry (ECR)",
+        "Build and push the image (immutable tag, digest)",
+        "Deploy the release (CodeBuild, command deploy)",
+        "Deployment summary",
+    ]
+    positions = [step_index(workflow, name) for name in order]
+    assert positions == sorted(positions)
+    assert workflow["env"]["LAST_UNIT"] == "bastion"
+    assert set(triggers(load("deploy-dev.yml"))) == {"workflow_dispatch"}
+
+
+def test_image_push_uses_buildx_arm64_ecr_login_and_an_immutable_tag() -> None:
+    workflow = load("deploy.yml")
+    by_name = {step.get("name"): step for step in steps(workflow)}
+    login = by_name["Log in to the image registry (ECR)"]["run"]
+    assert "aws ecr get-login-password | docker login --username AWS --password-stdin" in login
+    assert "::add-mask::" in login and "${GITHUB_SHA::7}-${GITHUB_RUN_ID}" in login
+    push = by_name["Build and push the image (immutable tag, digest)"]["run"]
+    assert "docker buildx build --platform linux/arm64 --build-context rotation=src/rotation" in push
+    assert "-f src/backend/Dockerfile" in push and "--push" in push and "--metadata-file" in push
+    assert "containerimage.digest" in push and "describe-images" in push
+    assert ":latest" not in push
+    uses = {s["uses"].split("@")[0]: s["uses"] for s in steps(workflow) if "uses" in s}
+    assert "99012661954931238ded8c8b007157a8430204e1" in uses["docker/setup-qemu-action"]
+    assert "f87e5991a6d7451dcb8d9637bfbc97413f497069" in uses["docker/setup-buildx-action"]
+
+
+def test_release_is_deployed_by_digest_with_allow_listed_overrides() -> None:
+    workflow = load("deploy.yml")
+    step = next(s for s in steps(workflow) if s.get("name") == "Deploy the release (CodeBuild, command deploy)")
+    run = step["run"]
+    assert "--command deploy" in run
+    for name in ("IMAGE_DIGEST", "RUN_ID", "WEB_ORIGIN", "COGNITO_USER_POOL_ID", "COGNITO_APP_CLIENT_ID"):
+        assert f"--pass {name}" in run
+    assert step["env"]["RUN_ID"] == "r${{ github.run_id }}"
+    assert step["env"]["COGNITO_USER_POOL_ID"] == "${{ vars.COGNITO_USER_POOL_ID }}"
+    assert step["env"]["WAF_ACL_ARN"] == "" and step["env"]["ACCESS_LOG_BUCKET"] == ""
+    assert "IMAGE_TAG" not in run
+
+
+def test_configuration_check_fails_early_on_empty_cognito_variables_and_web_origin() -> None:
+    step = next(s for s in steps(load("deploy.yml")) if s.get("name") == "Validate environment configuration")
+    assert "COGNITO_USER_POOL_ID" in step["env"] and "COGNITO_APP_CLIENT_ID" in step["env"]
+    assert ".Parameters.WebOrigin" in step["run"] and "parameters/dev.json" in step["run"]
+    assert "WebOrigin is empty" in step["run"]
+
+
+def test_ci_never_pushes_images() -> None:
+    text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+    assert "docker push" not in text and "--push" not in text and "docker login" not in text

@@ -1,0 +1,80 @@
+{{- /*
+Two Ingress objects of one IngressGroup (one ALB):
+  calculator-preflight  group order 10, no authentication, rules only for the method OPTIONS (CORS preflight)
+  calculator-api        group order 20, jwt-validation on every route, any method
+The smaller order is evaluated first, so OPTIONS reaches the pod without a token and every other request must
+carry a valid ID token. jwt-validation is read per Ingress and applies to the rules of that Ingress only
+(controller v3.6.0, pkg/ingress/enhanced_backend_builder.go). The listener default (fixed response 404) is built
+by the controller when no Ingress sets spec.defaultBackend (pkg/ingress/model_build_listener.go).
+Annotations that configure the load balancer or the listeners are "Exclusive": the same text is on both objects.
+*/}}
+{{- $ns := include "calc.namespace" . }}
+{{- $region := .Values.region }}
+{{- $pool := required "auth.userPoolId is required" .Values.auth.userPoolId }}
+{{- $client := required "auth.appClientId is required" .Values.auth.appClientId }}
+{{- $issuer := printf "https://cognito-idp.%s.amazonaws.com/%s" $region $pool }}
+{{- $jwt := dict "jwksEndpoint" (printf "%s/.well-known/jwks.json" $issuer) "issuer" $issuer "additionalClaims" (list (dict "name" "aud" "format" "single-string" "values" (list $client)) (dict "name" "token_use" "format" "single-string" "values" (list "id"))) }}
+{{- $preflight := dict "field" "http-request-method" "httpRequestMethodConfig" (dict "Values" (list "OPTIONS")) }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: calculator-preflight
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" . "name" "calculator-preflight" "component" "ingress") | nindent 4 }}
+  annotations:
+    {{- include "calc.albAnnotations" . | nindent 4 }}
+    alb.ingress.kubernetes.io/group.order: {{ .Values.ingress.preflightOrder | quote }}
+    {{- range $name, $w := .Values.workloads }}
+    {{- if eq $w.kind "http" }}
+    alb.ingress.kubernetes.io/conditions.{{ $name }}: {{ list $preflight | toJson | quote }}
+    {{- end }}
+    {{- end }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - http:
+        paths:
+          {{- range $name, $w := .Values.workloads }}
+          {{- if eq $w.kind "http" }}
+          {{- range $path := $w.routes }}
+          - path: {{ $path }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+          {{- end }}
+          {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: calculator-api
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" . "name" "calculator-api" "component" "ingress") | nindent 4 }}
+  annotations:
+    {{- include "calc.albAnnotations" . | nindent 4 }}
+    alb.ingress.kubernetes.io/group.order: {{ .Values.ingress.authOrder | quote }}
+    alb.ingress.kubernetes.io/jwt-validation: {{ $jwt | toJson | quote }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - http:
+        paths:
+          {{- range $name, $w := .Values.workloads }}
+          {{- if eq $w.kind "http" }}
+          {{- range $path := $w.routes }}
+          - path: {{ $path }}
+            pathType: Exact
+            backend:
+              service:
+                name: {{ $name }}
+                port:
+                  number: {{ $.Values.service.port }}
+          {{- end }}
+          {{- end }}
+          {{- end }}

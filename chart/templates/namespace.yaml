@@ -1,0 +1,20 @@
+{{- if .Values.namespace.create }}
+# Pod Security Admission: restricted is enforced, audited and warned. The Helm ownership metadata is written here
+# so that the namespace can be created before the release (kubectl apply of this template) and still be adopted.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "calc.namespace" . }}
+  labels:
+    app.kubernetes.io/name: calculator
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+{{- end }}

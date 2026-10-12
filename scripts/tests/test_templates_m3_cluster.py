@@ -264,7 +264,12 @@ def test_no_role_reads_secrets_from_star_and_only_migrate_reads_the_master_secre
                 reads.setdefault(role_of(cluster["Resources"][name]), []).append(
                     statement["Resource"]["Fn::ImportValue"]["Fn::Sub"].rsplit(":", 1)[1]
                 )
-    assert reads == {"CalcRole": ["AppSecretArn"], "HistoryRole": ["AppSecretArn"], "MigrateRole": ["MasterSecretArn"]}
+    # the cursor key secret is read by the history pod only (owner decision A)
+    assert reads == {
+        "CalcRole": ["AppSecretArn"],
+        "HistoryRole": ["AppSecretArn", "CursorSecretArn"],
+        "MigrateRole": ["MasterSecretArn"],
+    }
 
 
 def test_no_role_can_manage_aliases_and_kms_is_by_alias_and_service(cluster: dict[str, Any]) -> None:
@@ -295,7 +300,10 @@ def test_calc_and_history_publish_to_the_alerts_topic_and_migrate_does_not(clust
         publish = [s for s in statements_of(documents[name]) if "sns:Publish" in actions_of(s)]
         assert len(publish) == 1 and publish[0]["Resource"]["Fn::ImportValue"]["Fn::Sub"].endswith(":AlertsTopicArn")
     assert all("sns:" not in a for s in statements_of(documents["MigrateRolePolicy"]) for a in actions_of(s))
-    assert documents["CalcRolePolicy"] == documents["HistoryRolePolicy"]  # same permissions, as the design says
+    # same permissions, as the design says, plus the cursor key secret for history only
+    history = statements_of(documents["HistoryRolePolicy"])
+    assert [x for x in history if x.get("Sid") != "ReadTheCursorSecret"] == statements_of(documents["CalcRolePolicy"])
+    assert [x["Sid"] for x in history].count("ReadTheCursorSecret") == 1
 
 
 def test_load_balancer_controller_policy_is_the_reference_with_tag_conditions(cluster: dict[str, Any]) -> None:

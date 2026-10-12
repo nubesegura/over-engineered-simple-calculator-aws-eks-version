@@ -20,6 +20,7 @@ TAGS = {
     "env-type": "dev",
 }
 NAT_NAME = "nat-useast2-oecalc-eks-dev"
+KEEP_PARAMETER = "/oecalc/dev/eks/nat-keep-up"
 
 
 class Network:
@@ -63,6 +64,7 @@ def net(monkeypatch: pytest.MonkeyPatch) -> Iterator[Network]:
         monkeypatch.setenv("EIP_ALLOCATION_ID", n.eip)
         monkeypatch.setenv("NAME_TAG", NAT_NAME)
         monkeypatch.setenv("TAGS_JSON", json.dumps(TAGS))
+        monkeypatch.setenv("KEEP_UP_PARAMETER", KEEP_PARAMETER)
         yield n
 
 
@@ -111,7 +113,7 @@ def test_down_removes_route_before_gateway(net: Network, monkeypatch: pytest.Mon
 
     def spying_client(*args: Any, **kwargs: Any) -> Any:
         client = real(*args, **kwargs)
-        for name in ("delete_route", "delete_nat_gateway"):
+        for name in ("delete_route", "delete_nat_gateway") if args[0] == "ec2" else ():
             original = getattr(client, name)
 
             def wrapper(*a: Any, _n: str = name, _o: Any = original, **k: Any) -> Any:
@@ -315,3 +317,114 @@ def test_missing_and_malformed_settings_raise(net: Network, monkeypatch: pytest.
     monkeypatch.delenv("NAME_TAG")
     with pytest.raises(scheduler.SchedulerError, match="Missing"):
         run("up")
+
+
+def set_keep(value: str) -> None:
+    boto3.client("ssm", region_name="us-east-2").put_parameter(
+        Name=KEEP_PARAMETER, Value=value, Type="String", Overwrite=True
+    )
+
+
+def test_down_is_skipped_while_the_keep_up_parameter_is_true(net: Network, caplog: pytest.LogCaptureFixture) -> None:
+    run("up")
+    set_keep("true")
+    with caplog.at_level(logging.INFO):
+        result = run("down")
+    assert result == {"action": "down", "status": "skipped"}
+    assert len(net.gateways()) == 1
+    assert net.default_target() == net.gateways()[0]["NatGatewayId"]
+    lines = [json.loads(r.getMessage()) for r in caplog.records if r.getMessage().startswith("{")]
+    assert lines == [{"event": "nat_shutdown_skipped", "keep_up": "true"}]
+
+
+def test_down_goes_ahead_again_once_the_parameter_is_false(net: Network) -> None:
+    run("up")
+    set_keep("true")
+    assert run("down")["status"] == "skipped"
+    set_keep("false")
+    assert run("down")["status"] == "ok"
+    assert net.gateways() == []
+
+
+@pytest.mark.parametrize("value", [" TRUE ", "True"])
+def test_true_is_compared_after_trimming_and_ignoring_case(net: Network, value: str) -> None:
+    run("up")
+    set_keep(value)
+    assert run("down")["status"] == "skipped"
+    assert len(net.gateways()) == 1
+
+
+@pytest.mark.parametrize("value", ["yes", "1", "tomorrow", "2999-01-01T00:00:00Z"])
+def test_other_values_count_as_false_with_a_warning(net: Network, caplog: pytest.LogCaptureFixture, value: str) -> None:
+    run("up")
+    set_keep(value)
+    with caplog.at_level(logging.WARNING):
+        run("down")
+    assert net.gateways() == []
+    assert any("not true or false" in r.getMessage() for r in caplog.records)
+
+
+def test_false_goes_ahead_without_a_warning(net: Network, caplog: pytest.LogCaptureFixture) -> None:
+    run("up")
+    set_keep("false")
+    with caplog.at_level(logging.WARNING):
+        run("down")
+    assert net.gateways() == []
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+def test_a_missing_parameter_counts_as_false_with_a_warning(net: Network, caplog: pytest.LogCaptureFixture) -> None:
+    run("up")
+    with caplog.at_level(logging.WARNING):
+        run("down")
+    assert net.gateways() == []
+    assert any("does not exist" in r.getMessage() for r in caplog.records)
+
+
+def test_force_ignores_a_true_parameter(net: Network) -> None:
+    run("up")
+    set_keep("true")
+    assert run("down", force=True)["status"] == "ok"
+    assert net.gateways() == []
+
+
+def test_force_must_be_the_boolean_true(net: Network) -> None:
+    run("up")
+    set_keep("true")
+    assert run("down", force="true")["status"] == "skipped"
+    assert len(net.gateways()) == 1
+
+
+def test_up_ignores_the_parameter(net: Network) -> None:
+    set_keep("true")
+    run("up")
+    assert len(net.gateways()) == 1
+
+
+def test_a_read_error_skips_the_shutdown_and_fails_so_the_alarm_fires(
+    net: Network, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run("up")
+    real = boto3.client
+
+    def denied(service: str, *args: Any, **kwargs: Any) -> Any:
+        client = real(service, *args, **kwargs)
+        if service == "ssm":
+
+            def boom(**_k: Any) -> None:
+                raise client.exceptions.ClientError({"Error": {"Code": "AccessDeniedException"}}, "GetParameter")
+
+            client.get_parameter = boom
+        return client
+
+    monkeypatch.setattr(boto3, "client", denied)
+    with pytest.raises(Exception, match="AccessDenied"):
+        run("down")
+    assert len(net.gateways()) == 1
+
+
+def test_without_a_configured_parameter_down_behaves_as_before(net: Network, monkeypatch: pytest.MonkeyPatch) -> None:
+    run("up")
+    monkeypatch.delenv("KEEP_UP_PARAMETER")
+    run("down")
+    assert net.gateways() == []

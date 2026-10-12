@@ -4,7 +4,20 @@ Invoked by two EventBridge Scheduler schedules (22:00 and 08:00 Panama time) and
 workflow, by hand with {"action": "down", "wait": true}.
 
 Configuration comes from environment variables set by templates/scheduler.yaml:
-PUBLIC_SUBNET_ID, PRIVATE_ROUTE_TABLE_ID, EIP_ALLOCATION_ID, NAME_TAG and TAGS_JSON.
+PUBLIC_SUBNET_ID, PRIVATE_ROUTE_TABLE_ID, EIP_ALLOCATION_ID, NAME_TAG, TAGS_JSON and KEEP_UP_PARAMETER.
+
+Keeping the NAT gateway up: the SSM parameter named by KEEP_UP_PARAMETER holds the string "true" or "false"
+(default "false"). When "down" reads "true" it does nothing, logs one JSON line (nat_shutdown_skipped) and
+succeeds (no alarm); the NAT gateway stays up until a later scheduled "down" reads "false". Nothing resets the
+parameter automatically: the owner sets it back to "false". Decisions on the odd cases:
+- The value is compared after trimming spaces and ignoring case ("True " counts as true).
+- Any other value, or a parameter that does not exist: counts as "false" with a warning. A bad value must not
+  keep a paid resource running, and the template always creates the parameter, so absence means "not configured".
+- Any other read error (permission, throttling, network): "down" FAILS and deletes nothing. The shutdown is
+  skipped (the environment stays available, the cost of one more night is small) and the raised error trips the
+  existing alarm, so the owner notices. It is never silently ignored.
+- {"force": true} ignores the parameter (the destroy workflow, which must remove the NAT gateway).
+- "up" never reads the parameter.
 
 Both actions are idempotent and safe to run twice. The private default route never points to a
 gateway that is being removed: "down" deletes the route first. "up" creates the gateway with the
@@ -54,6 +67,7 @@ class Settings:
     eip_allocation_id: str
     name_tag: str
     tags: dict[str, str]
+    keep_up_parameter: str = ""
 
 
 def load_settings() -> Settings:
@@ -71,7 +85,27 @@ def load_settings() -> Settings:
         eip_allocation_id=os.environ["EIP_ALLOCATION_ID"],
         name_tag=os.environ["NAME_TAG"],
         tags={str(k): str(v) for k, v in tags.items()},
+        keep_up_parameter=os.environ.get("KEEP_UP_PARAMETER", ""),
     )
+
+
+def keep_nat_up(settings: Settings) -> bool:
+    """True when the keep-up parameter says the NAT gateway must not be removed.
+
+    A read error other than a missing parameter is raised (see the module docstring).
+    """
+    if not settings.keep_up_parameter:
+        return False
+    ssm = boto3.client("ssm", config=CLIENT_CONFIG)
+    try:
+        value = str(ssm.get_parameter(Name=settings.keep_up_parameter)["Parameter"]["Value"])
+    except ssm.exceptions.ParameterNotFound:
+        LOGGER.warning("Keep-up parameter %s does not exist: treated as false", settings.keep_up_parameter)
+        return False
+    normalized = value.strip().lower()
+    if normalized not in ("true", "false"):
+        LOGGER.warning("Keep-up parameter %s is not true or false: treated as false", settings.keep_up_parameter)
+    return normalized == "true"
 
 
 def _has_name(gateway: dict[str, Any], name: str) -> bool:
@@ -195,7 +229,7 @@ def action_down(ec2: Any, settings: Settings, wait: bool = False) -> None:
 
 
 def handler(event: dict[str, Any], _context: object) -> dict[str, str]:
-    """Entrypoint: event {"action": "up" | "down"}, optionally {"wait": true} for "down"."""
+    """Entrypoint: event {"action": "up" | "down"}; "down" also takes {"wait": true} and {"force": true}."""
     action = event.get("action")
     try:
         if action not in ACTIONS:
@@ -205,6 +239,9 @@ def handler(event: dict[str, Any], _context: object) -> dict[str, str]:
         if action == "up":
             action_up(ec2, settings)
         else:
+            if event.get("force") is not True and keep_nat_up(settings):
+                LOGGER.info(json.dumps({"event": "nat_shutdown_skipped", "keep_up": "true"}))
+                return {"action": "down", "status": "skipped"}
             action_down(ec2, settings, wait=event.get("wait") is True)
     except Exception:
         LOGGER.exception("NAT scheduler action %s failed", action)

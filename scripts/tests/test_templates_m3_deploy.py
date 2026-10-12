@@ -165,6 +165,13 @@ def test_source_read_is_limited_to_this_repository_and_environment_prefix(deploy
     assert deploy["Parameters"]["SourceBucketNamePattern"]["Default"].startswith("aws-sam-cli-managed-default-")
 
 
+def test_stack_outputs_are_readable_only_for_this_projects_stacks(deploy: dict[str, Any]) -> None:
+    by_sid = {s["Sid"]: s for s in role_statements(deploy, "DeployRole")}
+    read = by_sid["ReadProjectStackOutputs"]
+    assert read["Action"] == "cloudformation:DescribeStacks"
+    assert read["Resource"]["Fn::Sub"].endswith(":stack/stk-${RegionCode}-${Context}-eks-*-${EnvType}/*")
+
+
 def test_kms_is_granted_by_alias_with_via_service(deploy: dict[str, Any]) -> None:
     by_sid = {s["Sid"]: s for s in role_statements(deploy, "DeployRole")}
     kms = by_sid["UseTheDataKeyByAlias"]

@@ -1,0 +1,14 @@
+.git/
+.gitignore
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.bak
+*.tmp
+tests/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+README.md

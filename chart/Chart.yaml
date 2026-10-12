@@ -1,0 +1,8 @@
+apiVersion: v2
+name: calculator
+description: Calculator backend on EKS - HTTP workloads, migration job, network policies and the Ingress group
+type: application
+version: 0.1.0
+# The application version is the image digest set by the deployment (image.digest); it is not a chart property.
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0"

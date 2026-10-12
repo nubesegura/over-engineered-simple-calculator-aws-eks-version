@@ -1,0 +1,15 @@
+# Environment values: dev. Placeholders are overridden by the deployment script (--set); no account ids here.
+envType: dev
+
+replicaCount: 1
+
+app:
+  allowedOrigin: https://dev.example.invalid
+  logLevel: DEBUG
+
+network:
+  vpcCidr: 10.30.0.0/16   # parameters/dev.json VpcCidr
+
+# No WAF in dev
+ingress:
+  wafAclArn: ""

@@ -3,8 +3,9 @@ name: Deploy
 # Reusable deployment (infrastructure-only subset of task 4.8). Only dev works for now; prod is refused.
 # Deploys the stacks of templates/stacks.json up to and including `bastion` with change sets guarded
 # against removals and replacements (scripts/cfn_deploy.py; only the bastion may replace its instance), then
-# runs the CodeBuild deployment project with DEPLOY_COMMAND=addons. The stacks after `bastion` (storage,
-# alarms) and the application are added by the rest of task 4.8.
+# runs the CodeBuild deployment project with DEPLOY_COMMAND=addons, builds and pushes the image (linux/arm64,
+# immutable tag, deployed by digest only) and runs the project again with DEPLOY_COMMAND=deploy. The stacks after
+# `bastion` (storage, alarms) come with their milestones. The deployment role has PowerUserAccess: no IAM change.
 #
 # SAM build: the runner has Python 3.14 (setup-python), the runtime of both functions, so `sam build` builds
 # natively and no container is used (same approach as the ecs repository).
@@ -58,22 +59,22 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       # The units after rotation need the NAT gateway (nodes pull images); the scheduler turns it off at 22:00.
-      - name: NAT window preflight
-        env:
-          IGNORE_NAT_WINDOW: ${{ inputs.ignore_nat_window }}
-        run: |
-          flag=""
-          [ "$IGNORE_NAT_WINDOW" = "true" ] && flag="--ignore"
-          python3 scripts/nat_window.py check --env dev --through "$LAST_UNIT" $flag
-
       - name: Validate environment configuration
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
           ROLE_ARN_SET: ${{ secrets.ROLE_ARN != '' }}
           AWS_ACCOUNT_ID_SET: ${{ secrets.AWS_ACCOUNT_ID != '' }}
           SUPPORT_EMAIL_SET: ${{ secrets.SUPPORT_EMAIL != '' }}
+          COGNITO_USER_POOL_ID: ${{ vars.COGNITO_USER_POOL_ID }}
+          COGNITO_APP_CLIENT_ID: ${{ vars.COGNITO_APP_CLIENT_ID }}
         run: |
           missing=0
+          for variable in COGNITO_USER_POOL_ID COGNITO_APP_CLIENT_ID; do
+            [ -n "${!variable}" ] || { echo "::error::Variable '$variable' is not set in the 'dev' GitHub environment"; missing=1; }
+          done
+          web_origin=$(jq -r '.Parameters.WebOrigin // empty' parameters/dev.json)
+          [ -n "$web_origin" ] || { echo "::error::WebOrigin is empty in parameters/dev.json"; missing=1; }
+          echo "WEB_ORIGIN=$web_origin" >> "$GITHUB_ENV"
           [ -n "$AWS_REGION" ] || { echo "::error::Variable 'AWS_REGION' is not set in the 'dev' GitHub environment"; missing=1; }
           for secret in ROLE_ARN AWS_ACCOUNT_ID SUPPORT_EMAIL; do
             flag="${secret}_SET"
@@ -113,6 +114,14 @@ jobs:
           fi
 
       # Fails closed: exit 2 (owned by Terraform), 3 (both) and 4 (unreadable) stop the deployment.
+      - name: NAT window preflight
+        env:
+          IGNORE_NAT_WINDOW: ${{ inputs.ignore_nat_window }}
+        run: |
+          flag=""
+          [ "$IGNORE_NAT_WINDOW" = "true" ] && flag="--ignore"
+          python3 scripts/nat_window.py check --env dev --through "$LAST_UNIT" $flag
+
       - name: Owner guard (CloudFormation only)
         run: python scripts/iac_owner_guard.py check --tool cloudformation --env dev
 
@@ -130,6 +139,60 @@ jobs:
       - name: Install the cluster add-ons (CodeBuild, command addons)
         run: python scripts/run_deploy_build.py run --env dev --command addons
 
+      # The image is built the same way as in the CI image job (linux/arm64 under QEMU) and pushed to the ECR
+      # repository of the registry stack with an immutable tag. Only the repository name and the digest are printed.
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to the image registry (ECR)
+        run: |
+          set -euo pipefail
+          repository_uri=$(python scripts/cfn_deploy.py output --env dev --unit registry --key RepositoryUri)
+          repository_name=$(python scripts/cfn_deploy.py output --env dev --unit registry --key RepositoryName)
+          registry="${repository_uri%%/*}"
+          echo "::add-mask::$registry"
+          echo "::add-mask::$repository_uri"
+          {
+            echo "REPOSITORY_URI=$repository_uri"
+            echo "REPOSITORY_NAME=$repository_name"
+            echo "IMAGE_TAG=${GITHUB_SHA::7}-${GITHUB_RUN_ID}"
+          } >> "$GITHUB_ENV"
+          aws ecr get-login-password | docker login --username AWS --password-stdin "$registry" > /dev/null
+
+      - name: Build and push the image (immutable tag, digest)
+        run: |
+          set -euo pipefail
+          docker buildx build --platform linux/arm64 --build-context rotation=src/rotation \
+            -f src/backend/Dockerfile --tag "${REPOSITORY_URI}:${IMAGE_TAG}" \
+            --push --metadata-file "$RUNNER_TEMP/image-metadata.json" src/backend > /dev/null
+          digest=$(jq -r '."containerimage.digest" // empty' "$RUNNER_TEMP/image-metadata.json")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::The build did not report an image digest"; exit 1; }
+          registered=$(aws ecr describe-images --repository-name "$REPOSITORY_NAME" --image-ids "imageTag=${IMAGE_TAG}" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          [ "$registered" = "$digest" ] || { echo "::error::The registry digest differs from the build digest"; exit 1; }
+          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
+          echo "Image pushed: repository $REPOSITORY_NAME, digest $digest"
+          { echo ""; echo "- Image: repository \`$REPOSITORY_NAME\`, digest \`$digest\`"; } >> "$GITHUB_STEP_SUMMARY"
+
+      # The release uses the digest only (never a tag). Values are passed with --pass (read from the environment,
+      # allow-list only, never printed); the build prints the release status and the load balancer address.
+      - name: Deploy the release (CodeBuild, command deploy)
+        env:
+          RUN_ID: r${{ github.run_id }}
+          COGNITO_USER_POOL_ID: ${{ vars.COGNITO_USER_POOL_ID }}
+          COGNITO_APP_CLIENT_ID: ${{ vars.COGNITO_APP_CLIENT_ID }}
+          WAF_ACL_ARN: "" # dev has no web ACL (prod passes it)
+          ACCESS_LOG_BUCKET: "" # load balancer access logs stay off until the storage stack exists (task 5.1)
+        run: |
+          python scripts/run_deploy_build.py run --env dev --command deploy \
+            --pass IMAGE_DIGEST --pass RUN_ID --pass WEB_ORIGIN --pass COGNITO_USER_POOL_ID \
+            --pass COGNITO_APP_CLIENT_ID --pass WAF_ACL_ARN --pass ACCESS_LOG_BUCKET
+
       - name: Deployment summary
         if: ${{ success() }}
         run: |
@@ -138,5 +201,6 @@ jobs:
             echo "### What the owner does next"
             echo "- Confirm the e-mail subscription of the alerts topic (SNS sends a confirmation message to the SUPPORT_EMAIL address)."
             echo "- Review the stacks and their tags in the console, then run Destroy DEV in plan mode when finished."
-            echo "- Stacks after \`bastion\` (storage, alarms) and the application are not deployed by this subset."
+            echo "- Run Deploy DEV in shared-resources so Route 53 reads the new API backend registration."
+            echo "- Stacks after \`bastion\` (storage, alarms) are added by their milestones."
           } >> "$GITHUB_STEP_SUMMARY"

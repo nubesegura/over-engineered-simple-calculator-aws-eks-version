@@ -246,6 +246,38 @@ Resources:
               Bool:
                 aws:SecureTransport: "false"
 
+  # Signing key of the history cursors, read only by the history pod. Not rotated on purpose: a new value only
+  # invalidates the cursors in flight, which the API answers with a 400 and the client starts again.
+  CursorSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub "sm-${RegionCode}-${Context}-eks-cursor-${EnvType}"
+      Description: Signing key of the history cursors (JSON key cursor_key); not rotated
+      KmsKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      GenerateSecretString:
+        SecretStringTemplate: "{}"
+        GenerateStringKey: cursor_key
+        PasswordLength: 48
+        ExcludePunctuation: true
+
+  CursorSecretPolicy:
+    Type: AWS::SecretsManager::ResourcePolicy
+    Properties:
+      SecretId: !Ref CursorSecret
+      BlockPublicPolicy: true
+      ResourcePolicy:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: secretsmanager:*
+            Resource: "*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
   MasterSecretPolicy:
     Type: AWS::SecretsManager::ResourcePolicy
     Properties:
@@ -385,6 +417,11 @@ Outputs:
     Value: !Ref AppSecret
     Export:
       Name: !Sub "${AWS::StackName}:AppSecretArn"
+  CursorSecretArn:
+    Description: ARN of the history cursor key secret
+    Value: !Ref CursorSecret
+    Export:
+      Name: !Sub "${AWS::StackName}:CursorSecretArn"
   MasterSecretArn:
     Description: ARN of the master secret created and managed by RDS
     Value: !If [IsProd, !GetAtt DbInstanceProd.MasterUserSecret.SecretArn, !GetAtt DbInstanceDev.MasterUserSecret.SecretArn]

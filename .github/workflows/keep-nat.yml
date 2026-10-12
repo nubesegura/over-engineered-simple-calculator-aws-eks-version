@@ -1,0 +1,78 @@
+name: Keep NAT
+
+# Keeps the dev NAT gateway up past the 22:00 shutdown, or puts the normal schedule back, without redeploying. It only
+# writes one SSM parameter, /oecalc/dev/eks/nat-keep-up ("true" or "false"), that the scheduler function reads before
+# it removes the NAT gateway. Nothing sets it back to false: when you are done, run this workflow with keep false.
+# By hand (same effect):
+#   aws ssm put-parameter --name /oecalc/dev/eks/nat-keep-up --type String --overwrite --value true
+on:
+  workflow_dispatch:
+    inputs:
+      keep:
+        description: "true = do not remove the NAT gateway at 22:00 until set back to false; false = normal schedule"
+        type: boolean
+        default: true
+
+permissions:
+  id-token: write # Required for requesting the JWT for AWS OIDC
+  contents: read
+
+env:
+  PARAMETER_NAME: /oecalc/dev/eks/nat-keep-up
+
+jobs:
+  keep-nat:
+    name: Keep NAT (dev)
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 10
+    concurrency:
+      group: keep-nat-dev
+      cancel-in-progress: false
+    steps:
+      - name: Validate environment configuration
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          ROLE_ARN_SET: ${{ secrets.ROLE_ARN != '' }}
+          AWS_ACCOUNT_ID_SET: ${{ secrets.AWS_ACCOUNT_ID != '' }}
+        run: |
+          missing=0
+          [ -n "$AWS_REGION" ] || { echo "::error::Variable 'AWS_REGION' is not set in the 'dev' GitHub environment"; missing=1; }
+          for secret in ROLE_ARN AWS_ACCOUNT_ID; do
+            flag="${secret}_SET"
+            [ "${!flag}" = "true" ] || { echo "::error::Secret '$secret' is not set in the 'dev' GitHub environment"; missing=1; }
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ secrets.ROLE_ARN }}
+          role-session-name: gha-keep-nat-${{ github.run_id }}
+          aws-region: ${{ vars.AWS_REGION }}
+          mask-aws-account-id: true
+
+      - name: Verify target AWS account
+        env:
+          EXPECTED_ACCOUNT: ${{ secrets.AWS_ACCOUNT_ID }}
+        run: |
+          ACTUAL_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "::add-mask::$ACTUAL_ACCOUNT"
+          if [ "$ACTUAL_ACCOUNT" != "$EXPECTED_ACCOUNT" ]; then
+            echo "::error::The credentials do not point to the AWS account configured for the dev GitHub environment"
+            exit 1
+          fi
+
+      - name: Write the keep-up setting
+        env:
+          KEEP: ${{ inputs.keep }}
+        run: |
+          if [ "$KEEP" = "true" ]; then VALUE=true; else VALUE=false; fi
+          aws ssm put-parameter --name "$PARAMETER_NAME" --type String --overwrite --value "$VALUE" > /dev/null
+          if [ "$VALUE" = "true" ]; then
+            MESSAGE="Keep NAT is now true: the 22:00 (Panama) shutdown will not remove the NAT gateway. Remember to run this workflow again with keep false when you are done; nothing resets it, and the NAT gateway costs money while it stays up."
+          else
+            MESSAGE="Keep NAT is now false: the next 22:00 (Panama) shutdown removes the NAT gateway as usual."
+          fi
+          echo "$MESSAGE"
+          echo "$MESSAGE" >> "$GITHUB_STEP_SUMMARY"

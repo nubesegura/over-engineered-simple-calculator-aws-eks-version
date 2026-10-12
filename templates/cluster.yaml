@@ -771,6 +771,11 @@ Resources:
             Action: secretsmanager:GetSecretValue
             Resource:
               Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+          - Sid: ReadTheCursorSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:CursorSecretArn"
           - Sid: DecryptTheSecretThroughSecretsManager
             Effect: Allow
             Action: kms:Decrypt

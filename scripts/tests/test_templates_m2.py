@@ -138,7 +138,7 @@ def test_application_secret_has_no_host_and_a_generated_password(database: dict[
 
 def test_secret_policies_deny_insecure_transport(database: dict[str, Any]) -> None:
     policies = of_type(database, "AWS::SecretsManager::ResourcePolicy")
-    assert set(policies) == {"AppSecretPolicy", "MasterSecretPolicy"}
+    assert set(policies) == {"AppSecretPolicy", "CursorSecretPolicy", "MasterSecretPolicy"}
     for policy in policies.values():
         deny = policy["Properties"]["ResourcePolicy"]["Statement"][0]
         assert deny["Effect"] == "Deny"
@@ -290,3 +290,15 @@ def test_proxy_log_group_is_owned_encrypted_and_created_before_the_proxy(databas
     proxy = database["Resources"]["Proxy"]
     assert "ProxyLogGroup" in proxy["DependsOn"]
     assert proxy["Properties"]["DBProxyName"]["Fn::Sub"].endswith(props["LogGroupName"]["Fn::Sub"].split("/")[-1])
+
+
+def test_cursor_secret_is_generated_json_encrypted_not_rotated_and_exported(database: dict[str, Any]) -> None:
+    secret = database["Resources"]["CursorSecret"]["Properties"]
+    assert secret["Name"] == {"Fn::Sub": "sm-${RegionCode}-${Context}-eks-cursor-${EnvType}"}
+    assert "DataKeyAlias" in json.dumps(secret["KmsKeyId"])
+    generated = secret["GenerateSecretString"]
+    assert generated["SecretStringTemplate"] == "{}" and generated["GenerateStringKey"] == "cursor_key"
+    assert generated["PasswordLength"] == 48 and generated["ExcludePunctuation"] is True
+    assert "SecretString" not in secret
+    assert not of_type(database, "AWS::SecretsManager::RotationSchedule")
+    assert database["Outputs"]["CursorSecretArn"]["Value"] == {"Ref": "CursorSecret"}
