@@ -254,7 +254,9 @@ def test_roles_and_associations(cluster: dict[str, Any]) -> None:
         assert association["Properties"]["ClusterName"] == {"Ref": "Cluster"}
 
 
-def test_no_role_reads_secrets_from_star_and_only_migrate_reads_the_master_secret(cluster: dict[str, Any]) -> None:
+def test_no_role_reads_secrets_from_star_and_secret_reads_are_scoped_per_role(
+    cluster: dict[str, Any],
+) -> None:
     reads: dict[str, list[str]] = {}
     for name, document in policy_documents(cluster).items():
         for statement in statements_of(document):
@@ -268,7 +270,7 @@ def test_no_role_reads_secrets_from_star_and_only_migrate_reads_the_master_secre
     assert reads == {
         "CalcRole": ["AppSecretArn"],
         "HistoryRole": ["AppSecretArn", "CursorSecretArn"],
-        "MigrateRole": ["MasterSecretArn"],
+        "MigrateRole": ["MasterSecretArn", "AppSecretArn"],  # never the cursor secret
     }
 
 

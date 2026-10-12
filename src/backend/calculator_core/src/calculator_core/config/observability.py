@@ -13,6 +13,10 @@ from contextvars import ContextVar
 from datetime import UTC, datetime
 from types import TracebackType
 
+from botocore.exceptions import ClientError
+
+from calculator_core.adapters.outbound.aws_errors import describe_error
+
 _correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 _subject: ContextVar[str | None] = ContextVar("subject", default=None)
 
@@ -33,6 +37,8 @@ def _exception_fields(
     cause = getattr(error, "original_error", None) or getattr(error, "__cause__", None)
     if cause is not None:
         fields["cause_type"] = type(cause).__name__
+        if isinstance(cause, ClientError):
+            fields["aws_error"] = describe_error(cause)
     fields["frames"] = [
         {"file": frame.filename, "line": frame.lineno, "function": frame.name}
         for frame in traceback.extract_tb(trace)

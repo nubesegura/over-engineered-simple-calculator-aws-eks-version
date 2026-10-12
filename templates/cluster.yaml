@@ -845,6 +845,12 @@ Resources:
             Action: secretsmanager:GetSecretValue
             Resource:
               Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:MasterSecretArn"
+          # The migrate command sets the password of the application user from the application secret.
+          - Sid: ReadTheApplicationSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
           - Sid: DecryptTheSecretThroughSecretsManager
             Effect: Allow
             Action: kms:Decrypt

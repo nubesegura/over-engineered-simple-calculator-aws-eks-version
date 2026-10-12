@@ -2,6 +2,7 @@ import json
 import logging
 from typing import Any
 
+from calculator_core.adapters.outbound.aws_errors import describe_error
 from calculator_core.application.ports.error_notifier import InternalErrorReport
 
 logger = logging.getLogger(__name__)
@@ -33,4 +34,4 @@ class SnsErrorNotifier:
                 Message=json.dumps(body),
             )
         except Exception as error:  # a failed alert must never fail the request
-            logger.error("Could not publish the error notification (%s).", type(error).__name__)
+            logger.error("Could not publish the error notification (%s).", describe_error(error))

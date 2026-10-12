@@ -16,6 +16,7 @@ from typing import Any
 import boto3
 import psycopg
 
+from calculator_core.adapters.outbound.aws_errors import describe_error
 from calculator_core.adapters.outbound.migrations import apply_migrations, ensure_application_user
 from calculator_core.config.observability import configure_logging
 from calculator_core.config.settings import SettingsError
@@ -98,8 +99,8 @@ def run_migrate(env: Mapping[str, str] | None = None) -> int:
         logger.error("%s", error)
         return 1
     except Exception as error:
-        # Type only: driver and SDK messages are not guaranteed to be free of secrets.
-        logger.error("Migration failed (%s).", type(error).__name__)
+        # Type, AWS code and operation only: messages are not guaranteed to be free of secrets.
+        logger.error("Migration failed (%s).", describe_error(error))
         return 1
     logger.info("Migration finished; %d file(s) applied.", len(applied))
     return 0
