@@ -302,7 +302,7 @@ jobs:
           cat "$RUNNER_TEMP/unknown.txt"
           [ "$rc" -eq 2 ] && grep -q "Usage: calculator" "$RUNNER_TEMP/unknown.txt" || { echo "::error::An unknown command must print the usage and exit 2"; exit 1; }
           rc=0
-          docker run --rm --platform linux/arm64 "$IMAGE" ingest 2> "$RUNNER_TEMP/ingest.txt" || rc=$?
+          docker run --rm --platform linux/arm64 "$IMAGE" ingest > "$RUNNER_TEMP/ingest.txt" 2>&1 || rc=$?
           cat "$RUNNER_TEMP/ingest.txt"
           [ "$rc" -eq 1 ] && grep -q "Invalid configuration" "$RUNNER_TEMP/ingest.txt" || { echo "::error::ingest without its settings must exit 1 and name the missing configuration"; exit 1; }
 
