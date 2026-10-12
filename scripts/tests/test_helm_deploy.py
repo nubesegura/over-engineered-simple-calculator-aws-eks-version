@@ -148,11 +148,10 @@ def run_script(tmp_path: Path) -> Any:
 def test_success_order(run_script: Any) -> None:
     run = run_script(FAKE_ALB="alb.example.invalid")
     assert run.ok, run.output
-    steps = [
-        run.index("aws cloudformation describe-stacks"),
-        run.index("aws ssm get-parameter"),
-        run.index("helm template"),
-        run.index("kubectl apply -f -"),
+    # `helm template | kubectl apply -f -` is one pipeline: its two processes log in no fixed order
+    pipeline = sorted([run.index("helm template"), run.index("kubectl apply -f -")])
+    before = [run.index("aws cloudformation describe-stacks"), run.index("aws ssm get-parameter")]
+    after = [
         run.index("kubectl --namespace calculator get job/migrate-42"),
         run.index("helm upgrade --install calculator"),
         run.index("kubectl --namespace calculator get deployments"),
@@ -160,7 +159,9 @@ def test_success_order(run_script: Any) -> None:
         run.index("kubectl --namespace calculator rollout status deployment.apps/history"),
         run.index("kubectl --namespace calculator get ingress calculator-api"),
     ]
-    assert steps == sorted(steps)
+    assert before == sorted(before)
+    assert after == sorted(after)
+    assert max(before) < pipeline[0] and pipeline[1] < after[0]
     assert "Load balancer address: alb.example.invalid" in run.output
     assert "Summary:" in run.output and "2 deployments rolled out" in run.output
 

@@ -46,15 +46,25 @@ def admin() -> Iterator[psycopg.Connection[Any]]:
         _reset(connection)
 
 
-def _snapshot(admin: psycopg.Connection[Any]) -> list[Any]:
-    return admin.execute(
-        "SELECT (SELECT array_agg(version ORDER BY version) FROM schema_migrations), "
-        "(SELECT array_agg(indexname ORDER BY indexname) FROM pg_indexes "
-        " WHERE tablename = 'calculations'), "
-        "(SELECT array_agg(privilege_type ORDER BY privilege_type) FROM "
-        " information_schema.role_table_grants WHERE grantee = %s AND table_name = 'calculations')",
+def _snapshot(admin: psycopg.Connection[Any]) -> tuple[list[str], list[str], list[str]]:
+    """Versions, index names and group privileges as sorted Python lists.
+
+    Each value is aggregated as one text string and split here, so the result does not depend
+    on how the driver adapts array types (array of name or of a domain comes back as text).
+    """
+    row = admin.execute(
+        "SELECT coalesce((SELECT string_agg(version::text, ',' ORDER BY version) "
+        " FROM schema_migrations), ''), "
+        "coalesce((SELECT string_agg(indexname::text, ',' ORDER BY indexname) FROM pg_indexes "
+        " WHERE tablename = 'calculations'), ''), "
+        "coalesce((SELECT string_agg(privilege_type::text, ',' ORDER BY privilege_type) FROM "
+        " information_schema.role_table_grants "
+        " WHERE grantee = %s AND table_name = 'calculations'), '')",
         (GROUP_ROLE,),
-    ).fetchall()
+    ).fetchone()
+    assert row is not None
+    versions, indexes, privileges = (sorted(value.split(",")) if value else [] for value in row)
+    return versions, indexes, privileges
 
 
 def test_running_twice_applies_once_and_changes_nothing(admin: psycopg.Connection[Any]) -> None:
@@ -70,8 +80,8 @@ def test_running_twice_applies_once_and_changes_nothing(admin: psycopg.Connectio
     assert created is True
     assert created_again is False
     assert _snapshot(admin) == before
-    assert before[0][1] == ["calculations_history_idx", "calculations_pkey"]
-    assert before[0][2] == ["INSERT", "SELECT"]
+    assert before[1] == ["calculations_history_idx", "calculations_pkey"]
+    assert before[2] == ["INSERT", "SELECT"]
 
 
 def test_an_existing_user_keeps_its_password(admin: psycopg.Connection[Any]) -> None:
