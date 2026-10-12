@@ -55,7 +55,7 @@ def find_auto_scaling_group(cluster: str, groups: dict[str, Any]) -> str:
         raise DiscoveryError(f"no Auto Scaling group with tag {ASG_TAG}={cluster}: is the node group created?")
     if len(names) > 1:
         raise DiscoveryError(f"{len(names)} Auto Scaling groups carry tag {ASG_TAG}={cluster}; expected one: {names}")
-    return names[0]
+    return str(names[0])
 
 
 def tag_map(mapping: dict[str, Any]) -> dict[str, str]:

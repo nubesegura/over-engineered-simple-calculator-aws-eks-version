@@ -31,7 +31,8 @@ def props(template: dict[str, Any], name: str) -> dict[str, Any]:
 
 def statement(document: dict[str, Any], sid: str) -> dict[str, Any]:
     (found,) = [s for s in document["Statement"] if s["Sid"] == sid]
-    return found
+    result: dict[str, Any] = found
+    return result
 
 
 def test_both_buckets_block_public_access_and_encrypt(storage: dict[str, Any]) -> None:
