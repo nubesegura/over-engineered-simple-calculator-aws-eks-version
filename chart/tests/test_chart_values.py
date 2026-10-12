@@ -144,3 +144,13 @@ def test_files_are_utf8_with_lf() -> None:
             data = path.read_bytes()
             assert b"\r" not in data, path
             data.decode("utf-8")
+
+
+@pytest.mark.parametrize("template", ["namespace.yaml", "serviceaccounts.yaml"])
+def test_resources_applied_before_the_release_carry_the_helm_ownership_metadata(template: str) -> None:
+    """The namespace and the service accounts are applied with kubectl before `helm install`: without the Helm
+    ownership annotations the release refuses to adopt them (found by the first real deployment)."""
+    text = (CHART / "templates" / template).read_text(encoding="utf-8")
+    assert "meta.helm.sh/release-name: {{ " in text, template
+    assert "meta.helm.sh/release-namespace: {{ " in text, template
+    assert "managed-by" in text or "calc.labels" in text, template

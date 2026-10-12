@@ -88,11 +88,16 @@ def test_resource_quota_and_limit_range(docs: list[Doc]) -> None:
     assert {"default", "defaultRequest", "min", "max"} <= set(container)
 
 
-def test_service_accounts_exist_without_annotations(docs: list[Doc]) -> None:
+def test_service_accounts_carry_only_the_helm_ownership_annotations(docs: list[Doc]) -> None:
     accounts = of_kind(docs, "ServiceAccount")
     assert sorted(a["metadata"]["name"] for a in accounts) == ["calc", "history", "migrate"]
     for account in accounts:
-        assert "annotations" not in account["metadata"]
+        # Pod Identity needs no annotation (never a role ARN here); the Helm ownership metadata lets the release
+        # adopt accounts that were applied before it
+        assert set(account["metadata"]["annotations"]) == {
+            "meta.helm.sh/release-name",
+            "meta.helm.sh/release-namespace",
+        }
         assert account["automountServiceAccountToken"] is False
 
 
