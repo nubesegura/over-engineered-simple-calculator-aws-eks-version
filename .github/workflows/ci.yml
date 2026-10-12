@@ -296,10 +296,13 @@ jobs:
         if: steps.dockerfile.outputs.present == 'true'
         run: |
           set -uo pipefail
-          docker run --rm --platform linux/arm64 "$IMAGE" nonsense 2> "$RUNNER_TEMP/unknown.txt"; rc=$?
+          # The runner shell has -e: capture the exit code explicitly so a non-zero code is checked, not fatal
+          rc=0
+          docker run --rm --platform linux/arm64 "$IMAGE" nonsense 2> "$RUNNER_TEMP/unknown.txt" || rc=$?
           cat "$RUNNER_TEMP/unknown.txt"
           [ "$rc" -eq 2 ] && grep -q "Usage: calculator" "$RUNNER_TEMP/unknown.txt" || { echo "::error::An unknown command must print the usage and exit 2"; exit 1; }
-          docker run --rm --platform linux/arm64 "$IMAGE" ingest 2> "$RUNNER_TEMP/ingest.txt"; rc=$?
+          rc=0
+          docker run --rm --platform linux/arm64 "$IMAGE" ingest 2> "$RUNNER_TEMP/ingest.txt" || rc=$?
           cat "$RUNNER_TEMP/ingest.txt"
           [ "$rc" -eq 2 ] && grep -q "not available" "$RUNNER_TEMP/ingest.txt" || { echo "::error::ingest must exit 2 with a clear message until task 5.2"; exit 1; }
 
