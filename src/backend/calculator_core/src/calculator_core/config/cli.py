@@ -4,12 +4,12 @@ import sys
 from collections.abc import Sequence
 
 from calculator_core.config.http_service import run_http_service
+from calculator_core.config.ingest_worker import run_ingest_worker
 from calculator_core.config.migrate_job import run_migrate
-from calculator_core.config.settings import WORKLOADS, SettingsError
+from calculator_core.config.settings import INGEST_WORKLOAD, WORKLOADS, SettingsError
 
 MIGRATE = "migrate"
-INGEST = "ingest"
-COMMANDS = (*WORKLOADS, MIGRATE)
+COMMANDS = (*WORKLOADS, INGEST_WORKLOAD, MIGRATE)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -19,9 +19,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     command = args[0]
     if command == MIGRATE:
         return run_migrate()
-    if command == INGEST:
-        sys.stderr.write("The ingest command is not available in this version.\n")
-        return 2
+    if command == INGEST_WORKLOAD:
+        return run_ingest_worker()
     if command not in WORKLOADS:
         return _usage()
     try:

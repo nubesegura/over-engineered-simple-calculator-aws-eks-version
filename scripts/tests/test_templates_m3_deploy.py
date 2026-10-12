@@ -142,7 +142,13 @@ def test_wildcard_resources_are_only_for_actions_that_need_them(deploy: dict[str
 def test_ssm_writes_are_limited_to_the_backend_registry_path(deploy: dict[str, Any]) -> None:
     by_sid = {s["Sid"]: s for s in role_statements(deploy, "DeployRole")}
     write = by_sid["PublishBackendRegistration"]
-    assert {"ssm:PutParameter", "ssm:DeleteParameter"} <= set(write["Action"])
+    assert set(write["Action"]) == {  # exactly what helm_deploy.sh and destroy_registry.sh call, nothing broader
+        "ssm:PutParameter",
+        "ssm:DeleteParameter",
+        "ssm:GetParameter",
+        "ssm:AddTagsToResource",
+    }
+    assert write["Effect"] == "Allow" and write["Resource"] != "*"
     assert write["Resource"]["Fn::Sub"].endswith(":parameter/${Context}/${EnvType}/api-backends/eks/*")
     certificate = by_sid["ReadSharedCertificateParameter"]
     assert certificate["Action"] == "ssm:GetParameter"
@@ -215,27 +221,12 @@ def test_cluster_security_group_accepts_443_from_the_build_group(deploy: dict[st
     assert "CidrIp" not in props
 
 
-def test_failed_builds_go_to_the_alerts_topic(deploy: dict[str, Any]) -> None:
-    rule = deploy["Resources"]["BuildFailedRule"]["Properties"]
-    pattern = rule["EventPattern"]
-    assert pattern["source"] == ["aws.codebuild"]
-    assert set(pattern["detail"]["build-status"]) == {"FAILED", "FAULT", "TIMED_OUT"}
-    assert pattern["detail"]["project-name"] == [{"Ref": "DeployProject"}]
-    (target,) = rule["Targets"]
-    assert "AlertsTopicArn" in json.dumps(target["Arn"])
-    assert rule["Name"] == {"Fn::Sub": "evr-${RegionCode}-${Context}-eks-deploy-failed-${EnvType}"}
-
-
-def test_undelivered_alert_events_go_to_an_encrypted_queue_only_this_rule_can_write(deploy: dict[str, Any]) -> None:
-    (target,) = deploy["Resources"]["BuildFailedRule"]["Properties"]["Targets"]
-    assert target["RetryPolicy"]["MaximumRetryAttempts"] > 0
-    assert target["DeadLetterConfig"]["Arn"] == {"Fn::GetAtt": ["AlertsDeadLetterQueue", "Arn"]}
-    queue = deploy["Resources"]["AlertsDeadLetterQueue"]["Properties"]
-    assert "DataKeyAlias" in json.dumps(queue["KmsMasterKeyId"])
-    allow, deny = deploy["Resources"]["AlertsDeadLetterQueuePolicy"]["Properties"]["PolicyDocument"]["Statement"]
-    assert allow["Principal"] == {"Service": "events.amazonaws.com"} and allow["Action"] == "sqs:SendMessage"
-    assert allow["Condition"]["ArnEquals"]["aws:SourceArn"] == {"Fn::GetAtt": ["BuildFailedRule", "Arn"]}
-    assert deny["Effect"] == "Deny" and deny["Condition"] == {"Bool": {"aws:SecureTransport": "false"}}
+def test_failed_build_rule_and_its_queue_are_gone(deploy: dict[str, Any]) -> None:
+    # One email for failed builds: the FailedBuilds alarm of the alarms stack replaces the rule
+    resources = deploy["Resources"]
+    for logical_id in ("BuildFailedRule", "AlertsDeadLetterQueue", "AlertsDeadLetterQueuePolicy"):
+        assert logical_id not in resources
+    assert not [r for r in resources.values() if r["Type"] in ("AWS::Events::Rule", "AWS::SQS::Queue")]
 
 
 def test_outputs_follow_the_export_pattern(deploy: dict[str, Any]) -> None:

@@ -1,0 +1,582 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Alarms stack of the EKS backend (requirement 13): CloudWatch alarms on the nodes, the target groups and the
+  load balancer, the database and its proxy, the ingestion queues and the deployment builds, all with the
+  alerts topic as action; the EventBridge rule that forwards AWS Health events of Amazon EKS; and the
+  EventBridge Scheduler reminder that publishes every 7 days the cluster version and the date its standard
+  support ends. The rotation and NAT scheduler error alarms live in their own stacks. The Auto Scaling group,
+  load balancer and target group dimensions only exist after the Helm step: scripts/discover_targets.py reads
+  them by tag and the deployment passes them as parameters, so a recreated cluster needs no manual edit.
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  NodeMinSize:
+    Type: Number
+    MinValue: 1
+    Description: Minimum size of the node group (the same value as the cluster stack); fewer nodes in service alarm
+  AutoScalingGroupName:
+    Type: String
+    AllowedPattern: "^[A-Za-z0-9_.:/-]{1,255}$"
+    Description: Auto Scaling group of the managed node group (scripts/discover_targets.py, tag eks:cluster-name)
+  LoadBalancerDimension:
+    Type: String
+    AllowedPattern: "^app/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+    Description: LoadBalancer dimension of the application load balancer (app/NAME/ID), found by tag
+  TargetGroupAdd:
+    Type: String
+    AllowedPattern: "^targetgroup/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+    Description: TargetGroup dimension of the add service (targetgroup/NAME/ID), found by tag
+  TargetGroupSub:
+    Type: String
+    AllowedPattern: "^targetgroup/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+  TargetGroupMul:
+    Type: String
+    AllowedPattern: "^targetgroup/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+  TargetGroupDiv:
+    Type: String
+    AllowedPattern: "^targetgroup/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+  TargetGroupHistory:
+    Type: String
+    AllowedPattern: "^targetgroup/[A-Za-z0-9-]{1,32}/[0-9a-f]{16}$"
+  Alb5xxThreshold:
+    Type: Number
+    MinValue: 1
+    Description: Load balancer 5XX responses in 5 minutes at or above which the alarm fires
+  RdsFreeStorageBytesThreshold:
+    Type: Number
+    MinValue: 1
+    Description: Free storage (bytes) of the database instance below which the alarm fires
+  RdsConnectionsThreshold:
+    Type: Number
+    MinValue: 1
+    Description: Database connections above which the alarm fires (the instance class limits the maximum)
+  RdsCpuPercentThreshold:
+    Type: Number
+    MinValue: 1
+    MaxValue: 100
+  RdsFreeableMemoryBytesThreshold:
+    Type: Number
+    MinValue: 1
+  QueueOldestMessageSecondsThreshold:
+    Type: Number
+    MinValue: 60
+    Description: Age (seconds) of the oldest message of the ingestion queue above which the alarm fires
+  ReminderMessageJson:
+    Type: String
+    MinLength: 2
+    MaxLength: 2000
+    Description: Text of the weekly reminder as a JSON string, built by scripts/reminder_message.py
+
+# The five mandatory tags travel as stack tags (CloudFormation copies them to the alarms, the rule and the role).
+Resources:
+  # ---------------------------------------------------------
+  # Nodes: in-service instances of the managed node group (the deployment enables the group metrics)
+  # ---------------------------------------------------------
+  NodesInServiceAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-nodes-in-service-${EnvType}"
+      AlarmDescription: "Fewer nodes in service than the node group minimum: pods may not be schedulable"
+      Namespace: AWS/AutoScaling
+      MetricName: GroupInServiceInstances
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: !Ref NodeMinSize
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: missing
+      Dimensions:
+        - Name: AutoScalingGroupName
+          Value: !Ref AutoScalingGroupName
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  # ---------------------------------------------------------
+  # Load balancer: pod health per target group and 5XX responses
+  # ---------------------------------------------------------
+  HealthyHostsAddAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-healthy-hosts-add-${EnvType}"
+      AlarmDescription: "The add target group has no healthy pod behind the load balancer"
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupAdd
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  HealthyHostsSubAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-healthy-hosts-sub-${EnvType}"
+      AlarmDescription: "The sub target group has no healthy pod behind the load balancer"
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupSub
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  HealthyHostsMulAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-healthy-hosts-mul-${EnvType}"
+      AlarmDescription: "The mul target group has no healthy pod behind the load balancer"
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupMul
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  HealthyHostsDivAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-healthy-hosts-div-${EnvType}"
+      AlarmDescription: "The div target group has no healthy pod behind the load balancer"
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupDiv
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  HealthyHostsHistoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-healthy-hosts-history-${EnvType}"
+      AlarmDescription: "The history target group has no healthy pod behind the load balancer"
+      Namespace: AWS/ApplicationELB
+      MetricName: HealthyHostCount
+      Statistic: Minimum
+      Period: 60
+      EvaluationPeriods: 3
+      Threshold: 1
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: TargetGroup
+          Value: !Ref TargetGroupHistory
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  LoadBalancer5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-alb-5xx-${EnvType}"
+      AlarmDescription: "The load balancer itself returned 5XX responses (5 minutes)"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_ELB_5XX_Count
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Alb5xxThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  Target5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-target-5xx-${EnvType}"
+      AlarmDescription: "The pods returned 5XX responses through the load balancer (5 minutes)"
+      Namespace: AWS/ApplicationELB
+      MetricName: HTTPCode_Target_5XX_Count
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref Alb5xxThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !Ref LoadBalancerDimension
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  # ---------------------------------------------------------
+  # Database and proxy
+  # ---------------------------------------------------------
+  RdsFreeStorageAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-rds-free-storage-${EnvType}"
+      AlarmDescription: "The database is running out of storage"
+      Namespace: AWS/RDS
+      MetricName: FreeStorageSpace
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref RdsFreeStorageBytesThreshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: breaching
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:InstanceIdentifier"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  RdsConnectionsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-rds-connections-${EnvType}"
+      AlarmDescription: "The database has too many connections"
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnections
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: !Ref RdsConnectionsThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:InstanceIdentifier"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  RdsCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-rds-cpu-${EnvType}"
+      AlarmDescription: "The database CPU is high for 15 minutes"
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsCpuPercentThreshold
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:InstanceIdentifier"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  RdsFreeableMemoryAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-rds-memory-${EnvType}"
+      AlarmDescription: "The database is low on freeable memory"
+      Namespace: AWS/RDS
+      MetricName: FreeableMemory
+      Statistic: Minimum
+      Period: 300
+      EvaluationPeriods: 3
+      Threshold: !Ref RdsFreeableMemoryBytesThreshold
+      ComparisonOperator: LessThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:InstanceIdentifier"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  ProxyAuthFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-proxy-auth-errors-${EnvType}"
+      AlarmDescription: "Clients failed to authenticate to the database proxy (a rotated credential may not have reached the pods)"
+      Namespace: AWS/RDS
+      MetricName: ClientConnectionsSetupFailedAuth
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ProxyName
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:ProxyName"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  ProxyDatabaseFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-proxy-db-errors-${EnvType}"
+      AlarmDescription: "The database proxy failed to open connections to the database"
+      Namespace: AWS/RDS
+      MetricName: DatabaseConnectionsSetupFailed
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 5
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ProxyName
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:ProxyName"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  # ---------------------------------------------------------
+  # Ingestion queues (the stack storage exports the queue names)
+  # ---------------------------------------------------------
+  DeadLetterQueueAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-ingest-dlq-${EnvType}"
+      AlarmDescription: "A CSV message reached the dead-letter queue: a file failed to process three times"
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-storage-${EnvType}:DeadLetterQueueName"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  IngestQueueAgeAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-ingest-queue-age-${EnvType}"
+      AlarmDescription: "The oldest CSV message waits too long: the ingestion worker may be down"
+      Namespace: AWS/SQS
+      MetricName: ApproximateAgeOfOldestMessage
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: !Ref QueueOldestMessageSecondsThreshold
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: QueueName
+          Value: !Sub "sqs-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  # ---------------------------------------------------------
+  # Deployment builds
+  # ---------------------------------------------------------
+  BuildFailuresAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub "alm-${RegionCode}-${Context}-eks-build-failures-${EnvType}"
+      AlarmDescription: "A deployment build (Helm, kubectl) failed"
+      Namespace: AWS/CodeBuild
+      MetricName: FailedBuilds
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: ProjectName
+          Value: 
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-deploy-${EnvType}:ProjectName"
+      AlarmActions:
+        - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+
+  # ---------------------------------------------------------
+  # AWS Health events of Amazon EKS (for example the end of standard support of the Kubernetes version).
+  # The topic policy and the data key policy already allow EventBridge rules of this account to publish.
+  # ---------------------------------------------------------
+  # Events that could not be delivered to the topic (EVB-01). Encrypted with the data key by alias; the key policy
+  # lets EventBridge use it.
+  HealthEventsDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "sqs-${RegionCode}-${Context}-eks-health-events-dlq-${EnvType}"
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      MessageRetentionPeriod: 1209600
+      ReceiveMessageWaitTimeSeconds: 20 # SQS-04
+
+  HealthEventsDeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref HealthEventsDeadLetterQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: OnlyThisRuleSendsFailedEvents
+            Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt HealthEventsDeadLetterQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !GetAtt HealthRule.Arn
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:GetQueueAttributes
+            Resource: !GetAtt HealthEventsDeadLetterQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  HealthRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: !Sub "evr-${RegionCode}-${Context}-eks-health-${EnvType}"
+      Description: AWS Health events of Amazon EKS to the alerts topic
+      State: ENABLED
+      EventPattern:
+        source: [aws.health]
+        detail-type: [AWS Health Event]
+        detail:
+          service: [EKS]
+      Targets:
+        - Id: alerts-topic
+          Arn:
+            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          RetryPolicy: # EVB-02
+            MaximumRetryAttempts: 8
+            MaximumEventAgeInSeconds: 3600
+          DeadLetterConfig: # EVB-01
+            Arn: !GetAtt HealthEventsDeadLetterQueue.Arn
+          InputTransformer:
+            InputPathsMap:
+              code: $.detail.eventTypeCode
+              category: $.detail.eventTypeCategory
+              time: $.time
+              text: $.detail.eventDescription[0].latestDescription
+            InputTemplate: '"AWS Health event for Amazon EKS: <code> (<category>) at <time>. <text>"'
+
+  # ---------------------------------------------------------
+  # Weekly reminder: EventBridge Scheduler publishes to the alerts topic through its own role
+  # ---------------------------------------------------------
+  ReminderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-reminder-sch-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/default"
+
+  ReminderRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-reminder-sch-${EnvType}"
+      RoleName: !Ref ReminderRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: PublishOnlyToTheAlertsTopic
+            Effect: Allow
+            Action: sns:Publish
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          - Sid: UseTheDataKeyThroughSns
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: "*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "sns.${AWS::Region}.amazonaws.com"
+
+  # A rate schedule first runs one rate period after it is created, so the first reminder arrives 7 days later.
+  ReminderSchedule:
+    Type: AWS::Scheduler::Schedule
+    DependsOn: ReminderRolePolicy
+    Properties:
+      Name: !Sub "sch-${RegionCode}-${Context}-eks-reminder-${EnvType}"
+      Description: Weekly reminder with the cluster, its Kubernetes version and the end of standard support
+      ScheduleExpression: rate(7 days)
+      FlexibleTimeWindow:
+        Mode: "OFF"
+      Target:
+        Arn: !Sub "arn:${AWS::Partition}:scheduler:::aws-sdk:sns:publish"
+        RoleArn: !GetAtt ReminderRole.Arn
+        Input: !Sub
+          - '{"TopicArn":"${TopicArn}","Subject":"EKS reminder - ${EnvType} cluster is still running","Message":${ReminderMessageJson}}'
+          - TopicArn:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+        RetryPolicy:
+          MaximumRetryAttempts: 2
+          MaximumEventAgeInSeconds: 3600
+
+Outputs:
+  HealthRuleName:
+    Description: EventBridge rule that forwards AWS Health events of Amazon EKS
+    Value: !Ref HealthRule
+  ReminderScheduleName:
+    Description: Weekly reminder schedule (rate 7 days)
+    Value: !Ref ReminderSchedule

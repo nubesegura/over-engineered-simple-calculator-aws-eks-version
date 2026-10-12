@@ -38,6 +38,11 @@ app:
   logLevel: INFO
   sslRootCert: /app/rds-global-bundle.pem
 
+# CSV ingestion worker settings: both come from the storage stack outputs (IngestQueueUrl, IngestBucketName)
+ingest:
+  queueUrl: ""          # set by the deployment
+  bucketName: ""        # set by the deployment
+
 # Secret with the signing key of the history cursors (JSON key cursor_key); read only by the history pod
 cursor:
   secretArn: ""
@@ -87,16 +92,21 @@ resourceProfiles:
   migrate:
     requests: {cpu: 50m, memory: 128Mi}
     limits: {cpu: 250m, memory: 256Mi}
+  ingest:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {cpu: 250m, memory: 256Mi}
 
-# Service accounts that exist. No annotations: EKS Pod Identity associations (cluster stack) need none.
+# Service accounts that exist. No annotations: EKS Pod Identity associations (cluster and storage stacks) need none.
 serviceAccounts:
   - calc
   - history
   - migrate
+  - ingest
 
-# HTTP workloads (kind http). One template renders each into Deployment, Service and, above one replica, a
-# PodDisruptionBudget. The container argument is the workload name. A map (not a list) so that an environment
-# file can override single fields. The ingest worker is added in task 5.3.
+# Workloads. kind http: one template renders each into Deployment, Service and, above one replica, a
+# PodDisruptionBudget. kind worker: Deployment only (no port, no Service, no Ingress route, no probe, no
+# PodDisruptionBudget); its replicas are fixed in the workload. The container argument is the workload name.
+# A map (not a list) so that an environment file can override single fields.
 workloads:
   add:
     kind: http
@@ -123,6 +133,12 @@ workloads:
     serviceAccount: history
     profile: history
     routes: [/api/v1/history, /api/eks/v1/history]
+  # Reads the CSV queue; one replica in every environment (a second one would only double the polling)
+  ingest:
+    kind: worker
+    serviceAccount: ingest
+    profile: ingest
+    replicas: 1
 
 # Schema migration job. One Job per deployment: the name carries runId (the deployment passes its run number)
 # or, when empty, the release revision. It is not a hook: it needs the namespace and the service account.

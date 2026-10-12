@@ -112,6 +112,8 @@ DEPLOY_ENV = {
     "WEB_ORIGIN": "https://page.example.invalid",
     "COGNITO_USER_POOL_ID": "us-east-2_ExamplePool",
     "COGNITO_APP_CLIENT_ID": "exampleclientid123",
+    "INGEST_QUEUE_URL": "https://sqs.us-east-2.amazonaws.com/123456789012/example-ingest",
+    "INGEST_BUCKET": "example-ingest-bucket",
     "WAF_ACL_ARN": "",
     "ACCESS_LOG_BUCKET": "",
 }
@@ -138,6 +140,12 @@ def test_optional_empty_values_are_left_out() -> None:
     assert {o["name"] for o in overrides} == set(rdb.PASSTHROUGH_REQUIRED)
     with_waf = rdb.build_overrides("deploy", ALL_NAMES, {**DEPLOY_ENV, "WAF_ACL_ARN": "arn:x"})
     assert "WAF_ACL_ARN" in {o["name"] for o in with_waf}
+    with_logs = rdb.build_overrides("deploy", ALL_NAMES, {**DEPLOY_ENV, "ACCESS_LOG_BUCKET": "example-alb-logs"})
+    assert "ACCESS_LOG_BUCKET" in {o["name"] for o in with_logs}
+
+
+def test_storage_values_are_required_for_the_worker() -> None:
+    assert {"INGEST_QUEUE_URL", "INGEST_BUCKET"} <= set(rdb.PASSTHROUGH_REQUIRED)
 
 
 @pytest.mark.parametrize("name", rdb.PASSTHROUGH_REQUIRED)
@@ -160,6 +168,10 @@ def test_deploy_needs_every_required_name_to_be_passed() -> None:
         ("RUN_ID", "Run_1"),
         ("WEB_ORIGIN", "http://page.example.invalid"),
         ("WEB_ORIGIN", "https://page.example.invalid/path"),
+        ("INGEST_QUEUE_URL", "http://sqs.us-east-2.amazonaws.com/123456789012/q"),
+        ("INGEST_QUEUE_URL", "https://example.invalid/123456789012/q"),
+        ("INGEST_BUCKET", "Bad_Bucket"),
+        ("ACCESS_LOG_BUCKET", "bucket/with/slash"),
     ],
 )
 def test_formats_are_checked_and_the_value_is_not_echoed(name: str, bad: str) -> None:
@@ -183,7 +195,7 @@ def test_deploy_run_passes_the_digest_and_never_logs_values(
     assert values["WEB_ORIGIN"] == DEPLOY_ENV["WEB_ORIGIN"] and "WAF_ACL_ARN" not in values
     out = capsys.readouterr().out + summary.read_text(encoding="utf-8")
     assert DIGEST in out  # the digest is public and goes to the summary
-    for private in ("exampleclientid123", "us-east-2_ExamplePool", "page.example.invalid"):
+    for private in ("exampleclientid123", "us-east-2_ExamplePool", "page.example.invalid", "123456789012"):
         assert private not in out
 
 

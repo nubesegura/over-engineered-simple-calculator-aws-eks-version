@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from typing import Any
 
@@ -81,12 +82,15 @@ def test_deploy_runs_the_guards_in_order_and_builds_after_the_stacks() -> None:
         "aws sts get-caller-identity",
         "iac_owner_guard.py check --tool cloudformation --env dev",
         "package_rotation.py",
-        "cfn_deploy.py deploy --env dev --through",
+        "cfn_deploy.py deploy --env dev --through storage",
         "run_deploy_build.py run --env dev --command addons",
+        "run_deploy_build.py run --env dev --command deploy",
+        "discover_targets.py --cluster-name",
+        "cfn_deploy.py deploy --env dev --only",
     ]
     positions = [joined.index(item) for item in order]
     assert positions == sorted(positions)
-    assert workflow["env"]["LAST_UNIT"] == "bastion"
+    assert workflow["env"]["LAST_UNIT"] == "alarms"
 
 
 def test_account_comparison_is_masked() -> None:
@@ -218,18 +222,20 @@ def test_deploy_builds_pushes_and_deploys_in_order() -> None:
         "Verify target AWS account",
         "NAT window preflight",
         "Owner guard (CloudFormation only)",
-        "Deploy the stacks (security through bastion)",
+        "Deploy the stacks (security through storage)",
         "Install the cluster add-ons (CodeBuild, command addons)",
         "Set up QEMU (arm64)",
         "Set up Docker Buildx",
         "Log in to the image registry (ECR)",
         "Build and push the image (immutable tag, digest)",
         "Deploy the release (CodeBuild, command deploy)",
+        "Discover the alarm dimensions and build the reminder",
+        "Deploy the alarms stack",
         "Deployment summary",
     ]
     positions = [step_index(workflow, name) for name in order]
     assert positions == sorted(positions)
-    assert workflow["env"]["LAST_UNIT"] == "bastion"
+    assert workflow["env"]["LAST_UNIT"] == "alarms"
     assert set(triggers(load("deploy-dev.yml"))) == {"workflow_dispatch"}
 
 
@@ -254,11 +260,27 @@ def test_release_is_deployed_by_digest_with_allow_listed_overrides() -> None:
     step = next(s for s in steps(workflow) if s.get("name") == "Deploy the release (CodeBuild, command deploy)")
     run = step["run"]
     assert "--command deploy" in run
-    for name in ("IMAGE_DIGEST", "RUN_ID", "WEB_ORIGIN", "COGNITO_USER_POOL_ID", "COGNITO_APP_CLIENT_ID"):
+    for name in (
+        "IMAGE_DIGEST",
+        "RUN_ID",
+        "WEB_ORIGIN",
+        "COGNITO_USER_POOL_ID",
+        "COGNITO_APP_CLIENT_ID",
+        "INGEST_QUEUE_URL",
+        "INGEST_BUCKET",
+        "ACCESS_LOG_BUCKET",
+    ):
         assert f"--pass {name}" in run
     assert step["env"]["RUN_ID"] == "r${{ github.run_id }}"
     assert step["env"]["COGNITO_USER_POOL_ID"] == "${{ vars.COGNITO_USER_POOL_ID }}"
-    assert step["env"]["WAF_ACL_ARN"] == "" and step["env"]["ACCESS_LOG_BUCKET"] == ""
+    assert step["env"]["WAF_ACL_ARN"] == "" and "ACCESS_LOG_BUCKET" not in step["env"]
+    # the three storage values are read from the stack outputs and masked before they are passed on
+    for key, variable in (
+        ("IngestQueueUrl", "INGEST_QUEUE_URL"),
+        ("IngestBucketName", "INGEST_BUCKET"),
+        ("AlbLogBucketName", "ACCESS_LOG_BUCKET"),
+    ):
+        assert f"--unit storage --key {key}" in run and f'echo "::add-mask::${variable}"' in run
     assert "IMAGE_TAG" not in run
 
 
@@ -272,3 +294,32 @@ def test_configuration_check_fails_early_on_empty_cognito_variables_and_web_orig
 def test_ci_never_pushes_images() -> None:
     text = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
     assert "docker push" not in text and "--push" not in text and "docker login" not in text
+
+
+def test_every_unit_up_to_the_last_one_has_its_template() -> None:
+    last = load("deploy.yml")["env"]["LAST_UNIT"]
+    stacks = json.loads((REPO / "templates" / "stacks.json").read_text(encoding="utf-8"))["environments"]["dev"]
+    units = [entry["unit"] for entry in stacks]
+    for entry in stacks[: units.index(last) + 1]:
+        assert (REPO / entry["template"]).is_file(), entry["template"]
+
+
+def test_alarms_are_deployed_alone_after_the_release_with_the_discovered_dimensions() -> None:
+    by_name = {step.get("name"): step for step in steps(load("deploy.yml"))}
+    discover = by_name["Discover the alarm dimensions and build the reminder"]["run"]
+    assert 'discover_targets.py --cluster-name "$cluster" --enable-asg-metrics --github-env "$GITHUB_ENV"' in discover
+    assert 'reminder_message.py --env dev --cluster-name "$cluster" --github-env "$GITHUB_ENV"' in discover
+    assert "--unit cluster --key ClusterName" in discover
+    # the first deployment stops before the alarms (their dimensions do not exist yet); the second one is --only
+    assert "--through storage" in by_name["Deploy the stacks (security through storage)"]["run"]
+    alarms_run = by_name["Deploy the alarms stack"]["run"].strip()
+    assert alarms_run == 'python scripts/cfn_deploy.py deploy --env dev --only "$LAST_UNIT"'
+
+
+def test_destroy_removes_the_registration_before_the_stacks_are_deleted() -> None:
+    workflow = load("destroy-dev.yml")
+    names = [step.get("name") for step in steps(workflow)]
+    step = steps(workflow)[names.index("Remove the API backend registration (SSM)")]
+    assert "scripts/destroy_registry.sh" in step["run"] and "ENV_TYPE=dev" in step["run"]
+    assert "inputs.mode == 'destroy'" in step["if"]
+    assert names.index("Remove the API backend registration (SSM)") < names.index("Destroy (CloudFormation)")

@@ -35,7 +35,7 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- end -}}
 
 {{/* Environment shared by every pod: plain values, none is a secret. */}}
-{{- define "calc.env" -}}
+{{- define "calc.envCommon" -}}
 - name: AWS_REGION
   value: {{ .Values.region | quote }}
 - name: ALERTS_TOPIC_ARN
@@ -48,12 +48,28 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
   value: {{ .Values.app.dbPort | toString | quote }}
 - name: DB_NAME
   value: {{ .Values.app.dbName | quote }}
-- name: ALLOWED_ORIGIN
-  value: {{ required "app.allowedOrigin is required" .Values.app.allowedOrigin | quote }}
 - name: LOG_LEVEL
   value: {{ .Values.app.logLevel | quote }}
 - name: SSL_ROOT_CERT
   value: {{ .Values.app.sslRootCert | quote }}
+{{- end -}}
+
+{{/* HTTP pods and the migration job also get the CORS origin. */}}
+{{- define "calc.env" -}}
+{{ include "calc.envCommon" . }}
+- name: ALLOWED_ORIGIN
+  value: {{ required "app.allowedOrigin is required" .Values.app.allowedOrigin | quote }}
+{{- end -}}
+
+{{/* The ingestion worker: common settings plus the queue, the bucket and the environment name. */}}
+{{- define "calc.workerEnv" -}}
+{{ include "calc.envCommon" . }}
+- name: ENVIRONMENT
+  value: {{ required "envType is required (dev or prod)" .Values.envType | quote }}
+- name: INGEST_QUEUE_URL
+  value: {{ required "ingest.queueUrl is required for the ingest worker" .Values.ingest.queueUrl | quote }}
+- name: INGEST_BUCKET
+  value: {{ required "ingest.bucketName is required for the ingest worker" .Values.ingest.bucketName | quote }}
 {{- end -}}
 
 {{- define "calc.podSecurityContext" -}}

@@ -56,13 +56,22 @@ def test_helm_missing_message_is_clear() -> None:
 
 def test_workloads_map_to_the_contract_routes() -> None:
     values = load("values.yaml")
-    assert set(values["workloads"]) == set(ROUTES)
-    for name, workload in values["workloads"].items():
-        assert workload["kind"] == "http"
+    http = {name: w for name, w in values["workloads"].items() if w["kind"] == "http"}
+    assert set(http) == set(ROUTES)
+    for name, workload in http.items():
         assert workload["routes"] == ROUTES[name]
+    assert {name for name, w in values["workloads"].items() if w["kind"] == "worker"} == {"ingest"}
+    assert "routes" not in values["workloads"]["ingest"] and values["workloads"]["ingest"]["replicas"] == 1
     accounts = {name: workload["serviceAccount"] for name, workload in values["workloads"].items()}
-    assert accounts == {"add": "calc", "sub": "calc", "mul": "calc", "div": "calc", "history": "history"}
-    assert values["serviceAccounts"] == ["calc", "history", "migrate"]
+    assert accounts == {
+        "add": "calc",
+        "sub": "calc",
+        "mul": "calc",
+        "div": "calc",
+        "history": "history",
+        "ingest": "ingest",
+    }
+    assert values["serviceAccounts"] == ["calc", "history", "migrate", "ingest"]
     assert values["migrate"]["serviceAccount"] == "migrate"
 
 

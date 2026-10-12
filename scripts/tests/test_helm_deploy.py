@@ -16,6 +16,7 @@ DIGEST = "sha256:" + "c" * 64
 APP_SECRET = "arn:aws:secretsmanager:us-east-2:123456789012:secret:app-AbCdEf"
 MASTER_SECRET = "arn:aws:secretsmanager:us-east-2:123456789012:secret:master-AbCdEf"
 CURSOR_SECRET = "arn:aws:secretsmanager:us-east-2:123456789012:secret:cursor-AbCdEf"
+QUEUE_URL = "https://sqs.us-east-2.amazonaws.com/123456789012/example-ingest"
 CERTIFICATE = "arn:aws:acm:us-east-2:123456789012:certificate/example"
 
 
@@ -31,7 +32,9 @@ needs_bash = pytest.mark.skipif(BASH is None, reason="bash is not available")
 
 FAKE_AWS = r"""#!/usr/bin/env bash
 echo "aws $*" >> "$CALL_LOG"
-if [ "$1" = "ssm" ]; then echo "$FAKE_CERTIFICATE"; exit 0; fi
+if [ "$1" = "elbv2" ]; then echo "${FAKE_ZONE-ZEXAMPLE12345}"; exit 0; fi
+if [ "$1" = "ssm" ] && [ "$2" = "get-parameter" ]; then echo "$FAKE_CERTIFICATE"; exit 0; fi
+if [ "$1" = "ssm" ]; then [ -z "${FAKE_SSM_FAIL:-}" ] || exit 255; exit 0; fi
 key="$(printf '%s' "$*" | sed -n "s/.*OutputKey=='\([A-Za-z]*\)'.*/\1/p")"
 if [ "$key" = "$FAKE_EMPTY_OUTPUT" ]; then echo None; exit 0; fi
 case "$key" in
@@ -84,6 +87,15 @@ BASE_ENV = {
     "WEB_ORIGIN": "https://dev.example.invalid",
     "COGNITO_USER_POOL_ID": "us-east-2_ExamplePool",
     "COGNITO_APP_CLIENT_ID": "exampleclientid123",
+    "INGEST_QUEUE_URL": QUEUE_URL,
+    "INGEST_BUCKET": "example-ingest-bucket",
+    "TAG_TEAM_OWNER": "nube-segura",
+    "TAG_PROJECT_NAME": "over-engineered-calculator",
+    "TAG_APP_NAME": "calc-api",
+    "TAG_REPO_NAME": "example-repo",
+    "ADDRESS_POLL_SECONDS": "0",
+    "ADDRESS_TIMEOUT_SECONDS": "0",
+    "FAKE_ALB": "alb.example.invalid",
     "FAKE_APP_SECRET": APP_SECRET,
     "FAKE_MASTER_SECRET": MASTER_SECRET,
     "FAKE_CURSOR_SECRET": CURSOR_SECRET,
@@ -158,6 +170,8 @@ def test_success_order(run_script: Any) -> None:
         run.index("kubectl --namespace calculator rollout status deployment.apps/add"),
         run.index("kubectl --namespace calculator rollout status deployment.apps/history"),
         run.index("kubectl --namespace calculator get ingress calculator-api"),
+        run.index("aws elbv2 describe-load-balancers"),
+        run.index("aws ssm put-parameter"),
     ]
     assert before == sorted(before)
     assert after == sorted(after)
@@ -195,6 +209,8 @@ def test_release_is_atomic_waits_and_does_not_create_the_job_twice(run_script: A
         "--set-string ingress.securityGroupId=sg-0123456789abcdef0",
         f"--set-string ingress.certificateArn={CERTIFICATE}",
         f"--set-string cursor.secretArn={CURSOR_SECRET}",
+        f"--set-string ingest.queueUrl={QUEUE_URL}",
+        "--set-string ingest.bucketName=example-ingest-bucket",
     ):
         assert expected in upgrade, expected
     assert "values-dev.yaml" in upgrade and "values.yaml" in upgrade
@@ -243,9 +259,60 @@ def test_a_rollout_that_does_not_finish_fails_the_deployment(run_script: Any) ->
 
 
 @needs_bash
-def test_no_address_yet_is_a_notice_not_an_error(run_script: Any) -> None:
+def test_no_address_after_the_wait_fails_and_registers_nothing(run_script: Any) -> None:
     run = run_script(FAKE_ALB="")
-    assert run.ok and "NOTICE" in run.output and "Load balancer address" not in run.output
+    assert not run.ok and "nothing was registered" in run.result.stderr
+    assert not run.has("aws ssm put-parameter") and not run.has("aws elbv2")
+
+
+@needs_bash
+def test_the_address_is_awaited_until_the_timeout(run_script: Any) -> None:
+    run = run_script(FAKE_ALB="", ADDRESS_TIMEOUT_SECONDS="1", ADDRESS_POLL_SECONDS="1")
+    assert not run.ok
+    assert len([c for c in run.calls if c.startswith("kubectl --namespace calculator get ingress")]) >= 2
+
+
+@needs_bash
+def test_registration_publishes_dns_name_and_zone_id_with_the_five_tags(run_script: Any) -> None:
+    run = run_script()
+    assert run.ok, run.output
+    puts = [c for c in run.calls if c.startswith("aws ssm put-parameter")]
+    assert len(puts) == 2
+    assert "--name /oecalc/dev/api-backends/eks/dns-name --value alb.example.invalid" in puts[0]
+    assert "--name /oecalc/dev/api-backends/eks/hosted-zone-id --value ZEXAMPLE12345" in puts[1]
+    assert all("--overwrite" in c and "--type String" in c for c in puts)
+    tagging = [c for c in run.calls if c.startswith("aws ssm add-tags-to-resource")]
+    assert len(tagging) == 2
+    for key in ("team-owner", "project-name", "app-name", "repo-name", "env-type"):
+        assert f"Key={key}," in tagging[0]
+    assert (
+        "Key=env-type,Value=dev" in tagging[0] and "--resource-id /oecalc/dev/api-backends/eks/dns-name" in tagging[0]
+    )
+    # the zone id is looked up from the load balancer that carries the ingress address
+    assert "alb.example.invalid" in run.find("aws elbv2")
+
+
+@needs_bash
+def test_summary_says_shared_resources_must_be_deployed_again(run_script: Any) -> None:
+    run = run_script()
+    assert (
+        "Registered /oecalc/dev/api-backends/eks/dns-name and /oecalc/dev/api-backends/eks/hosted-zone-id" in run.output
+    )
+    assert "deploy shared-resources again" in run.output
+    assert run.output.index("Summary:") < run.output.index("deploy shared-resources again")
+
+
+@needs_bash
+@pytest.mark.parametrize("zone", ["None", "", "not-a-zone"])
+def test_a_missing_or_malformed_zone_id_stops_before_anything_is_written(run_script: Any, zone: str) -> None:
+    run = run_script(FAKE_ZONE=zone)
+    assert not run.ok and not run.has("aws ssm put-parameter")
+
+
+@needs_bash
+def test_a_failed_parameter_write_fails_the_deployment(run_script: Any) -> None:
+    run = run_script(FAKE_SSM_FAIL="1")
+    assert not run.ok and "cannot write /oecalc/dev/api-backends/eks/dns-name" in run.result.stderr
 
 
 @needs_bash
@@ -261,6 +328,9 @@ def test_no_address_yet_is_a_notice_not_an_error(run_script: Any) -> None:
         "WEB_ORIGIN",
         "COGNITO_USER_POOL_ID",
         "COGNITO_APP_CLIENT_ID",
+        "INGEST_QUEUE_URL",
+        "INGEST_BUCKET",
+        "TAG_REPO_NAME",
     ],
 )
 def test_missing_input_is_a_clear_error_before_any_call(run_script: Any, missing: str) -> None:
@@ -281,6 +351,8 @@ def test_missing_input_is_a_clear_error_before_any_call(run_script: Any, missing
         ("WEB_ORIGIN", "http://dev.example.invalid"),
         ("WEB_ORIGIN", "https://dev.example.invalid/path"),
         ("COGNITO_USER_POOL_ID", "pool"),
+        ("INGEST_QUEUE_URL", "http://sqs.us-east-2.amazonaws.com/123456789012/q"),
+        ("INGEST_BUCKET", "Bad_Bucket"),
     ],
 )
 def test_malformed_input_is_refused_before_any_call(run_script: Any, name: str, value: str) -> None:
@@ -299,7 +371,15 @@ def test_an_empty_stack_output_stops_before_touching_the_cluster(run_script: Any
 @needs_bash
 def test_no_secret_reference_or_account_id_is_printed(run_script: Any) -> None:
     for run in (run_script(FAKE_ALB="alb.example.invalid"), run_script(FAKE_UPGRADE_FAIL="1")):
-        for forbidden in (APP_SECRET, MASTER_SECRET, CURSOR_SECRET, CERTIFICATE, "123456789012", "secretsmanager"):
+        for forbidden in (
+            APP_SECRET,
+            MASTER_SECRET,
+            CURSOR_SECRET,
+            CERTIFICATE,
+            QUEUE_URL,
+            "123456789012",
+            "secretsmanager",
+        ):
             assert forbidden not in run.output, forbidden
 
 

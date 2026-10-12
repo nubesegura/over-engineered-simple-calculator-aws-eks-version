@@ -7,10 +7,12 @@ executed.
 
 Commands:
 
-    deploy   --env dev [--allow-replacement TYPE ...] [--through UNIT]
+    deploy   --env dev [--allow-replacement TYPE ...] [--through UNIT | --only UNIT]
                                                         build and package SAM stacks, create, check and
                                                         execute change sets, print outputs and summary;
-                                                        --through stops the list after that unit
+                                                        --through stops the list after that unit; --only
+                                                        deploys that unit alone (the alarms stack, after the
+                                                        Helm step has created the load balancer)
     output   --env dev --unit cluster --key ClusterName print one stack output
     destroy  --env dev --mode plan|destroy              list or delete the stacks in reverse order
     params   --env dev --unit scheduler                 print the parameters a stack would receive
@@ -21,7 +23,8 @@ mandatory tags of parameters/<env>.json are applied as stack tags (CloudFormatio
 resources) and also fill the Tag* parameters of the scheduler stack.
 
 A unit with "allowReplacement" (a list of resource types) in stacks.json may replace those types in its own
-stack only; the global allowlist stays empty.
+stack only; the global allowlist stays empty. "allowRemoval" works the same way for resources that the
+change set removes (only the deploy unit has it, for the retired build-failed rule and its queue).
 
 A unit with "onlyIf" in stacks.json is deployed only when the named parameter has the given value; destroy
 removes every stack that exists, whatever the parameter says.
@@ -104,8 +107,13 @@ def load_stacks(env: str) -> list[dict[str, Any]]:
     return entries
 
 
-def limit_stacks(entries: list[dict[str, Any]], through: str | None) -> list[dict[str, Any]]:
-    """The entries up to and including the unit named by --through (all of them when it is None)."""
+def limit_stacks(entries: list[dict[str, Any]], through: str | None, only: str | None = None) -> list[dict[str, Any]]:
+    """The entries up to and including --through, or just the one named by --only (all when both are None)."""
+    if only is not None:
+        selected = [entry for entry in entries if entry["unit"] == only]
+        if not selected:
+            raise DeployError(f"unknown unit {only}: choose one of {', '.join(e['unit'] for e in entries)}")
+        return selected
     if through is None:
         return entries
     units = [entry["unit"] for entry in entries]
@@ -248,7 +256,9 @@ def wait_stack(stack: str, expected: tuple[str, ...]) -> None:
 # Change set guard
 # ---------------------------------------------------------------------------
 def guard_changes(
-    changes: list[dict[str, Any]], allowed_replacements: frozenset[str] = REPLACEMENT_ALLOWED_TYPES
+    changes: list[dict[str, Any]],
+    allowed_replacements: frozenset[str] = REPLACEMENT_ALLOWED_TYPES,
+    allowed_removals: frozenset[str] = frozenset(),
 ) -> list[str]:
     """Return the violations of the change set guard (empty means safe to execute)."""
     violations: list[str] = []
@@ -259,6 +269,8 @@ def guard_changes(
         resource_type = detail.get("ResourceType")
         replacement = detail.get("Replacement")
         if action == "Remove":
+            if resource_type in allowed_removals:
+                continue
             violations.append(f"Remove {resource_type} {logical}")
         elif replacement in ("True", "Conditional") and resource_type not in allowed_replacements:
             violations.append(f"Replace ({replacement}) {resource_type} {logical}")
@@ -401,7 +413,7 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
                 f"  {d.get('Action'):<7} {d.get('ResourceType'):<45} {d.get('LogicalResourceId')}"
                 f" replacement={d.get('Replacement', '-')}"
             )
-        violations = guard_changes(page["Changes"], allowed)
+        violations = guard_changes(page["Changes"], allowed, frozenset(entry.get("allowRemoval", [])))
         if violations:
             for violation in violations:
                 print(f"::error::Change set guard: {stack}: {violation}")
@@ -477,12 +489,14 @@ def summary_lines(env: str, outputs: dict[str, dict[str, str]]) -> list[str]:
 
 
 def command_deploy(args: argparse.Namespace) -> int:
+    if args.only and args.through:
+        raise DeployError("use --through or --only, not both")
     config = load_parameters(args.env)  # fails before any change set when the file belongs to another environment
     run_id = os.environ.get("GITHUB_RUN_ID", str(int(time.time())))
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
     allowed = allowed_replacements(args.allow_replacement)
     outputs: dict[str, dict[str, str]] = {}
-    for entry in limit_stacks(load_stacks(args.env), args.through):
+    for entry in limit_stacks(load_stacks(args.env), args.through, args.only):
         if not unit_enabled(entry, config):
             print(f"{entry['stack']}: skipped ({entry['onlyIf']['parameter']} is not {entry['onlyIf']['equals']})")
             continue
@@ -826,6 +840,12 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="UNIT",
         default=None,
         help="deploy the units of stacks.json in order up to and including UNIT (default: all)",
+    )
+    deploy.add_argument(
+        "--only",
+        metavar="UNIT",
+        default=None,
+        help="deploy only this unit of stacks.json (not together with --through)",
     )
     deploy.set_defaults(handler=command_deploy)
     destroy = sub.add_parser("destroy")

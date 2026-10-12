@@ -139,6 +139,14 @@ jobs:
       # project, then wait until the load balancer, target groups and controller-created security groups with
       # this cluster's tags are gone. Until that task, scripts/cfn_deploy.py destroy only prints a notice.
 
+      # Task 5.4: remove the load balancer registration the deployment published for the shared edge. Minimal
+      # version; task 7.1 moves this call into the uninstall flow, after the load balancer is gone.
+      - name: Remove the API backend registration (SSM)
+        if: ${{ inputs.mode == 'destroy' && steps.owner.outputs.owner == 'cloudformation' }}
+        run: |
+          set -euo pipefail
+          CONTEXT=$(jq -r '.Parameters.Context' parameters/dev.json) ENV_TYPE=dev bash scripts/destroy_registry.sh
+
       # Per stack: termination protection off, empty this project's buckets and repositories, delete-stack,
       # wait. The scheduler removes the NAT gateway first whether or not it exists. Stops on DELETE_FAILED.
       - name: Destroy (CloudFormation)

@@ -342,6 +342,19 @@ def test_deploy_through_stops_after_the_named_unit(repo: Path, cli: FakeCli) -> 
     ]
 
 
+def test_limit_stacks_only_selects_one_unit_and_rejects_unknown_ones() -> None:
+    entries = [{"unit": "storage"}, {"unit": "alarms"}]
+    assert deploy.limit_stacks(entries, None, "alarms") == [{"unit": "alarms"}]
+    with pytest.raises(deploy.DeployError, match="unknown unit nope"):
+        deploy.limit_stacks(entries, None, "nope")
+
+
+def test_deploy_refuses_through_and_only_together(repo: Path, cli: FakeCli) -> None:
+    World(cli)
+    assert deploy.main(["deploy", "--env", "dev", "--through", "storage", "--only", "alarms"]) == 1
+    assert not cli.called("cloudformation create-change-set")
+
+
 def test_deploy_through_an_unknown_unit_is_an_error(repo: Path, cli: FakeCli) -> None:
     World(cli)
     assert deploy.main(["deploy", "--env", "dev", "--through", "nope"]) == 1
@@ -455,6 +468,35 @@ def test_per_unit_allowlist_applies_only_to_that_unit(repo: Path, cli: FakeCli) 
     with pytest.raises(deploy.DeployError, match="guard refused"):
         deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
     assert len(cli.called("cloudformation execute-change-set")) == 1
+
+
+REMOVABLE = ["AWS::Events::Rule", "AWS::SQS::Queue", "AWS::SQS::QueuePolicy"]
+
+
+def test_guard_allows_listed_removals_only() -> None:
+    allowed = frozenset(REMOVABLE)
+    assert deploy.guard_changes([change("Remove", t) for t in REMOVABLE], frozenset(), allowed) == []
+    assert deploy.guard_changes([change("Remove", "AWS::S3::Bucket")], frozenset(), allowed) == [
+        "Remove AWS::S3::Bucket X"
+    ]
+
+
+def test_per_unit_removal_applies_only_to_the_deploy_unit(repo: Path, cli: FakeCli) -> None:
+    world = World(cli)
+    world.change_set = {"Status": "CREATE_COMPLETE", "Changes": [change("Remove", "AWS::SQS::Queue")]}
+    unit = {**deploy.find_entry("dev", "bastion"), "allowRemoval": REMOVABLE}
+    deploy.deploy_stack("dev", unit, "1", "1", frozenset())
+    assert len(cli.called("cloudformation execute-change-set")) == 1
+    with pytest.raises(deploy.DeployError, match="guard refused"):
+        deploy.deploy_stack("dev", deploy.find_entry("dev", "security"), "1", "1", frozenset())
+    assert len(cli.called("cloudformation execute-change-set")) == 1
+
+
+def test_stacks_file_allows_removal_only_for_the_deploy_unit() -> None:
+    data = json.loads((REPO / "templates" / "stacks.json").read_text(encoding="utf-8"))
+    for entries in data["environments"].values():
+        allowed = {e["unit"]: e["allowRemoval"] for e in entries if "allowRemoval" in e}
+        assert allowed == {"deploy": REMOVABLE}
 
 
 def test_stacks_file_allows_only_the_bastion_instance_replacement() -> None:

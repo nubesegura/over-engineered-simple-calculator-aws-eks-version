@@ -29,6 +29,7 @@ pytestmark = pytest.mark.skipif(find_helm() is None, reason=HELM_MISSING)
 
 ENVS = ["dev", "prod"]
 HTTP = ["add", "sub", "mul", "div", "history"]
+WORKER = "ingest"
 ROUTES = {name: [f"/api/v1/{name}", f"/api/eks/v1/{name}"] for name in HTTP}
 ANN = "alb.ingress.kubernetes.io/"
 TAG_KEYS = ["team-owner", "project-name", "app-name", "repo-name", "env-type"]
@@ -90,7 +91,7 @@ def test_resource_quota_and_limit_range(docs: list[Doc]) -> None:
 
 def test_service_accounts_carry_only_the_helm_ownership_annotations(docs: list[Doc]) -> None:
     accounts = of_kind(docs, "ServiceAccount")
-    assert sorted(a["metadata"]["name"] for a in accounts) == ["calc", "history", "migrate"]
+    assert sorted(a["metadata"]["name"] for a in accounts) == ["calc", "history", "ingest", "migrate"]
     for account in accounts:
         # Pod Identity needs no annotation (never a role ARN here); the Helm ownership metadata lets the release
         # adopt accounts that were applied before it
@@ -103,10 +104,11 @@ def test_service_accounts_carry_only_the_helm_ownership_annotations(docs: list[D
 
 def test_workloads_use_the_right_account_and_argument(docs: list[Doc]) -> None:
     deployments = {d["metadata"]["name"]: d for d in of_kind(docs, "Deployment")}
-    assert sorted(deployments) == sorted(HTTP)
+    assert sorted(deployments) == sorted([*HTTP, WORKER])
+    accounts = {"history": "history", WORKER: "ingest"}
     for name, deployment in deployments.items():
         spec = deployment["spec"]["template"]["spec"]
-        assert spec["serviceAccountName"] == ("history" if name == "history" else "calc")
+        assert spec["serviceAccountName"] == accounts.get(name, "calc")
         assert spec["containers"][0]["args"] == [name]
 
 
@@ -141,6 +143,8 @@ def test_images_are_digests_without_tags(docs: list[Doc]) -> None:
 
 def test_probes_use_https_health(docs: list[Doc]) -> None:
     for deployment in of_kind(docs, "Deployment"):
+        if deployment["metadata"]["name"] == WORKER:
+            continue
         container = deployment["spec"]["template"]["spec"]["containers"][0]
         for probe in ("readinessProbe", "livenessProbe"):
             http_get = container[probe]["httpGet"]
@@ -173,14 +177,17 @@ def test_environment_variables_are_plain_and_complete(docs: list[Doc]) -> None:
         "DB_HOST",
         "DB_PORT",
         "DB_NAME",
-        "ALLOWED_ORIGIN",
         "LOG_LEVEL",
         "SSL_ROOT_CERT",
+    }
+    extra = {
+        "history": {"ALLOWED_ORIGIN", "CURSOR_KEY_SECRET_ARN"},
+        WORKER: {"ENVIRONMENT", "INGEST_QUEUE_URL", "INGEST_BUCKET"},
     }
     for deployment in of_kind(docs, "Deployment"):
         env = {e["name"]: e for e in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
         name = deployment["metadata"]["name"]
-        assert set(env) == expected | ({"CURSOR_KEY_SECRET_ARN"} if name == "history" else set())
+        assert set(env) == expected | extra.get(name, {"ALLOWED_ORIGIN"})
         assert all(set(e) == {"name", "value"} for e in env.values())
         assert env["DB_PORT"]["value"] == "5432"
         assert env["SSL_ROOT_CERT"]["value"] == "/app/rds-global-bundle.pem"
@@ -198,7 +205,7 @@ def test_pod_disruption_budget_only_above_one_replica(env: str, docs: list[Doc])
     budgets = of_kind(docs, "PodDisruptionBudget")
     replicas = {d["metadata"]["name"]: d["spec"]["replicas"] for d in of_kind(docs, "Deployment")}
     assert sorted(b["metadata"]["name"] for b in budgets) == sorted(n for n, r in replicas.items() if r > 1)
-    assert (len(budgets) == 5) == (env == "prod")
+    assert (len(budgets) == 5) == (env == "prod")  # the worker never has one
 
 
 def test_migrate_job_exists_once_and_is_one_shot(docs: list[Doc]) -> None:
@@ -407,3 +414,51 @@ def test_only_the_history_workload_gets_the_cursor_secret_and_it_is_required(env
         assert "CURSOR_KEY_SECRET_ARN" not in json.dumps(job)
     result = run_helm("template", helm_args(env, drop=("cursor.secretArn",)))
     assert result.returncode != 0 and "cursor.secretArn is required" in result.stderr
+
+
+def worker(docs: list[Doc]) -> Doc:
+    return named(docs, "Deployment", WORKER)
+
+
+def test_worker_has_one_replica_in_every_environment_and_no_service_budget_or_route(env: str, docs: list[Doc]) -> None:
+    assert worker(docs)["spec"]["replicas"] == 1  # prod runs two replicas of the HTTP pods, not of the worker
+    assert WORKER not in {s["metadata"]["name"] for s in of_kind(docs, "Service")}
+    assert WORKER not in {b["metadata"]["name"] for b in of_kind(docs, "PodDisruptionBudget")}
+    for ingress in ingresses(docs):
+        assert not any(f"/{WORKER}" in path for path, _ in paths(ingress))
+        assert not any(backend == WORKER for _, backend in paths(ingress))
+        assert f"{ANN}conditions.{WORKER}" not in anns(ingress)
+
+
+def test_worker_pod_is_restricted_has_no_port_or_probe_and_uses_its_pod_identity_account(docs: list[Doc]) -> None:
+    pod = worker(docs)["spec"]["template"]["spec"]
+    assert pod["serviceAccountName"] == "ingest" and pod["automountServiceAccountToken"] is False
+    assert pod["securityContext"]["runAsNonRoot"] is True
+    container = pod["containers"][0]
+    assert container["args"] == [WORKER]
+    assert container["securityContext"]["readOnlyRootFilesystem"] is True
+    assert container["securityContext"]["capabilities"] == {"drop": ["ALL"]}
+    for key in ("ports", "readinessProbe", "livenessProbe"):
+        assert key not in container, key
+    labels = worker(docs)["spec"]["template"]["metadata"]["labels"]
+    # not "api": the policy that lets the load balancer in selects that component, so nothing can reach the worker
+    assert labels["app.kubernetes.io/component"] == "worker"
+
+
+def test_worker_reads_queue_and_bucket_from_the_deployment_values(env: str, docs: list[Doc]) -> None:
+    values = {e["name"]: e["value"] for e in worker(docs)["spec"]["template"]["spec"]["containers"][0]["env"]}
+    assert values["INGEST_QUEUE_URL"].startswith("https://sqs.us-east-2.amazonaws.com/")
+    assert values["INGEST_BUCKET"] == "example-ingest-bucket" and values["ENVIRONMENT"] == env
+    assert values["DB_HOST"] == "proxy.example.invalid" and "MASTER_SECRET_ARN" not in values
+
+
+@pytest.mark.parametrize("missing", ["ingest.queueUrl", "ingest.bucketName"])
+def test_the_worker_needs_queue_and_bucket(missing: str) -> None:
+    result = run_helm("template", helm_args("dev", drop=(missing,)))
+    assert result.returncode != 0 and missing in result.stderr
+
+
+def test_load_balancer_logs_go_to_the_alb_prefix(docs: list[Doc]) -> None:
+    for ingress in ingresses(docs):
+        attributes = dict(item.split("=", 1) for item in anns(ingress)[ANN + "load-balancer-attributes"].split(","))
+        assert attributes["access_logs.s3.prefix"] == "alb"  # the only prefix the bucket policy accepts

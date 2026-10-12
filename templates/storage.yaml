@@ -1,0 +1,451 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Storage stack: the CSV ingestion bucket (data key, versioning, Block Public Access, TLS-only policy, lifecycle
+  per prefix) with its event notification to an encrypted SQS queue and dead-letter queue, the load balancer
+  access log bucket (SSE-S3, TLS-only, log delivery for the regional account) and the ingest pod identity role
+  with its association (the cluster stack is deployed before this one).
+
+Parameters:
+  EnvType:
+    Type: String
+    AllowedValues: [dev, prod]
+  Context:
+    Type: String
+    Default: oecalc
+    AllowedPattern: "^[a-z0-9]+$"
+  RegionCode:
+    Type: String
+    AllowedPattern: "^[a-z0-9]+$"
+  AlbLogRetentionDays:
+    Type: Number
+    MinValue: 1
+    Description: Days the load balancer access logs are kept (30 in dev, 90 in prod)
+  ElbLogDeliveryAccountId:
+    Type: String
+    AllowedPattern: "^[0-9]{12}$"
+    Description: >-
+      Account of Elastic Load Balancing for the region (public AWS documentation, "Enable access logs for your
+      Application Load Balancer"); it is the principal that writes the logs
+  MaxReceiveCount:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    Description: Receives of a message before it moves to the dead-letter queue
+
+Conditions:
+  IsProd: !Equals [!Ref EnvType, prod]
+
+Resources:
+  # ---------------------------------------------------------
+  # Queues (the queue policy allows only the events of the ingestion bucket; names are built, not referenced,
+  # so that bucket, policy and queue do not depend on each other in a loop)
+  # ---------------------------------------------------------
+  DeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "sqs-${RegionCode}-${Context}-eks-ingest-dlq-${EnvType}"
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      ReceiveMessageWaitTimeSeconds: 20
+      MessageRetentionPeriod: 1209600 # 14 days, the maximum, to give the owner time to look at it
+      RedriveAllowPolicy:
+        redrivePermission: byQueue
+        sourceQueueArns:
+          - !Sub "arn:${AWS::Partition}:sqs:${AWS::Region}:${AWS::AccountId}:sqs-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+      Tags:
+        - Key: Name
+          Value: !Sub "sqs-${RegionCode}-${Context}-eks-ingest-dlq-${EnvType}"
+
+  IngestQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub "sqs-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+      KmsMasterKeyId:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      VisibilityTimeout: 300 # the worker validates a file of up to 5 MB row by row before it deletes the message
+      ReceiveMessageWaitTimeSeconds: 20 # long polling
+      MessageRetentionPeriod: 345600 # 4 days
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt DeadLetterQueue.Arn
+        maxReceiveCount: !Ref MaxReceiveCount
+      Tags:
+        - Key: Name
+          Value: !Sub "sqs-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+
+  IngestQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref IngestQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:PurgeQueue
+            Resource: !GetAtt IngestQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: OnlyTheIngestionBucketSendsEvents
+            Effect: Allow
+            Principal:
+              Service: s3.amazonaws.com
+            Action: sqs:SendMessage
+            Resource: !GetAtt IngestQueue.Arn
+            Condition:
+              ArnEquals:
+                aws:SourceArn: !Sub "arn:${AWS::Partition}:s3:::bckt-${RegionCode}-${Context}-eks-ingest-${AWS::AccountId}-${EnvType}"
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  DeadLetterQueuePolicy:
+    Type: AWS::SQS::QueuePolicy
+    Properties:
+      Queues:
+        - !Ref DeadLetterQueue
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action:
+              - sqs:SendMessage
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+              - sqs:PurgeQueue
+            Resource: !GetAtt DeadLetterQueue.Arn
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+
+  # ---------------------------------------------------------
+  # Ingestion bucket: prefixes incoming/, processed/, rejected/ and reports/
+  # ---------------------------------------------------------
+  IngestBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: IngestQueuePolicy # S3 checks that it may send to the queue when the notification is created
+    Properties:
+      BucketName: !Sub "bckt-${RegionCode}-${Context}-eks-ingest-${AWS::AccountId}-${EnvType}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - BucketKeyEnabled: true
+            ServerSideEncryptionByDefault:
+              SSEAlgorithm: aws:kms
+              # The data key by alias (a replaced key keeps the alias)
+              KMSMasterKeyID: !Sub
+                - "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:${Alias}"
+                - Alias:
+                    Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+      LifecycleConfiguration:
+        Rules:
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+          - Id: incoming
+            Status: Enabled
+            Prefix: incoming/
+            ExpirationInDays: 30
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: processed
+            Status: Enabled
+            Prefix: processed/
+            ExpirationInDays: !If [IsProd, 90, 30]
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: rejected
+            Status: Enabled
+            Prefix: rejected/
+            ExpirationInDays: !If [IsProd, 90, 30]
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+          - Id: reports
+            Status: Enabled
+            Prefix: reports/
+            ExpirationInDays: !If [IsProd, 365, 30]
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+      NotificationConfiguration:
+        QueueConfigurations:
+          - Event: s3:ObjectCreated:*
+            Queue: !GetAtt IngestQueue.Arn
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: incoming/
+                  - Name: suffix
+                    Value: .csv
+      Tags:
+        - Key: Name
+          Value: !Sub "bckt-${RegionCode}-${Context}-eks-ingest-${AWS::AccountId}-${EnvType}"
+
+  IngestBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref IngestBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt IngestBucket.Arn
+              - !Sub "${IngestBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          - Sid: DenyOldTlsVersions
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt IngestBucket.Arn
+              - !Sub "${IngestBucket.Arn}/*"
+            Condition:
+              NumericLessThan:
+                s3:TlsVersion: 1.2
+
+  # ---------------------------------------------------------
+  # Load balancer access log bucket (log delivery does not support customer managed keys: SSE-S3)
+  # ---------------------------------------------------------
+  AlbLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "bckt-${RegionCode}-${Context}-eks-alb-logs-${AWS::AccountId}-${EnvType}"
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      LifecycleConfiguration:
+        Rules:
+          - Id: expire-logs
+            Status: Enabled
+            ExpirationInDays: !Ref AlbLogRetentionDays
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 1
+          - Id: abort-incomplete-uploads
+            Status: Enabled
+            AbortIncompleteMultipartUpload:
+              DaysAfterInitiation: 7
+      Tags:
+        - Key: Name
+          Value: !Sub "bckt-${RegionCode}-${Context}-eks-alb-logs-${AWS::AccountId}-${EnvType}"
+
+  AlbLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref AlbLogBucket
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: "*"
+            Action: s3:*
+            Resource:
+              - !GetAtt AlbLogBucket.Arn
+              - !Sub "${AlbLogBucket.Arn}/*"
+            Condition:
+              Bool:
+                aws:SecureTransport: "false"
+          # Only the load balancer service of the region, only under the prefix alb/ and this account's path
+          - Sid: LoadBalancerLogDelivery
+            Effect: Allow
+            Principal:
+              AWS: !Sub "arn:${AWS::Partition}:iam::${ElbLogDeliveryAccountId}:root"
+            Action: s3:PutObject
+            Resource: !Sub "${AlbLogBucket.Arn}/alb/AWSLogs/${AWS::AccountId}/*"
+
+  # ---------------------------------------------------------
+  # Pod identity: the ingest worker (queue, bucket prefixes, application secret; the cluster stack owns the others)
+  # ---------------------------------------------------------
+  IngestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub "iamr-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: pods.eks.amazonaws.com
+            Action:
+              - sts:AssumeRole
+              - sts:TagSession
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+
+  IngestRolePolicy:
+    Type: AWS::IAM::RolePolicy
+    Properties:
+      PolicyName: !Sub "iamp-${RegionCode}-${Context}-eks-ingest-${EnvType}"
+      RoleName: !Ref IngestRole
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Sid: ReadTheApplicationSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-database-${EnvType}:AppSecretArn"
+          - Sid: PublishToTheAlertsTopic
+            Effect: Allow
+            Action: sns:Publish
+            Resource:
+              Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
+          - Sid: UseTheDataKeyThroughSns
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "sns.${AWS::Region}.amazonaws.com"
+          - Sid: ReceiveFromTheIngestQueue
+            Effect: Allow
+            Action:
+              - sqs:ReceiveMessage
+              - sqs:DeleteMessage
+              - sqs:ChangeMessageVisibility
+              - sqs:GetQueueAttributes
+              - sqs:GetQueueUrl
+            Resource: !GetAtt IngestQueue.Arn
+          - Sid: ReadAndRemoveIncomingFiles
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:DeleteObject
+            Resource: !Sub "${IngestBucket.Arn}/incoming/*"
+          - Sid: WriteResultsAndMovedFiles
+            Effect: Allow
+            Action: s3:PutObject
+            Resource:
+              - !Sub "${IngestBucket.Arn}/processed/*"
+              - !Sub "${IngestBucket.Arn}/rejected/*"
+              - !Sub "${IngestBucket.Arn}/reports/*"
+          - Sid: ListTheFourPrefixes
+            Effect: Allow
+            Action: s3:ListBucket
+            Resource: !GetAtt IngestBucket.Arn
+            Condition:
+              StringLike:
+                s3:prefix:
+                  - incoming/*
+                  - processed/*
+                  - rejected/*
+                  - reports/*
+          - Sid: UseTheDataKeyThroughSecretsManager
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "secretsmanager.${AWS::Region}.amazonaws.com"
+          - Sid: UseTheDataKeyThroughSqs
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "sqs.${AWS::Region}.amazonaws.com"
+          - Sid: UseTheDataKeyThroughS3
+            Effect: Allow
+            Action:
+              - kms:GenerateDataKey
+              - kms:Decrypt
+            Resource: !Sub "arn:${AWS::Partition}:kms:${AWS::Region}:${AWS::AccountId}:key/*"
+            Condition:
+              ForAnyValue:StringEquals:
+                kms:ResourceAliases:
+                  - Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
+              StringEquals:
+                kms:ViaService: !Sub "s3.${AWS::Region}.amazonaws.com"
+
+  IngestAssociation:
+    Type: AWS::EKS::PodIdentityAssociation
+    Properties:
+      ClusterName:
+        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-cluster-${EnvType}:ClusterName"
+      Namespace: calculator
+      ServiceAccount: ingest
+      RoleArn: !GetAtt IngestRole.Arn
+
+Outputs:
+  IngestBucketName:
+    Value: !Ref IngestBucket
+    Export:
+      Name: !Sub "${AWS::StackName}:IngestBucketName"
+  IngestQueueUrl:
+    Value: !Ref IngestQueue
+    Export:
+      Name: !Sub "${AWS::StackName}:IngestQueueUrl"
+  IngestQueueArn:
+    Value: !GetAtt IngestQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:IngestQueueArn"
+  DeadLetterQueueName:
+    Description: Name of the dead-letter queue (the alarms stack watches its depth)
+    Value: !GetAtt DeadLetterQueue.QueueName
+    Export:
+      Name: !Sub "${AWS::StackName}:DeadLetterQueueName"
+  DeadLetterQueueArn:
+    Value: !GetAtt DeadLetterQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:DeadLetterQueueArn"
+  AlbLogBucketName:
+    Description: Bucket for the load balancer access logs (prefix alb)
+    Value: !Ref AlbLogBucket
+    Export:
+      Name: !Sub "${AWS::StackName}:AlbLogBucketName"
+  IngestRoleArn:
+    Value: !GetAtt IngestRole.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}:IngestRoleArn"

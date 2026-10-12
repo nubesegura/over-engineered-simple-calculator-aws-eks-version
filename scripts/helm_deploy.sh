@@ -6,7 +6,8 @@
 #      the deployment before the release is touched (requirement 11.4);
 #   3. helm upgrade --install --atomic --wait: a failed rollout rolls back to the previous release and the script
 #      exits non-zero with the cause (requirement 9.5);
-#   4. wait for the rollout of every deployment, print the load balancer address and a short summary.
+#   4. wait for the rollout of every deployment, wait for the load balancer address, publish its DNS name and
+#      canonical hosted zone id as SSM parameters and print a short summary.
 #
 # Passed by the workflow with StartBuild (non-secret):
 #   IMAGE_DIGEST            sha256:<64 hex> of the image just pushed
@@ -15,8 +16,13 @@
 #   COGNITO_USER_POOL_ID    Cognito pool of the webpage repository (GitHub variable, as in ecs)
 #   COGNITO_APP_CLIENT_ID   app client of that pool (GitHub variable, as in ecs)
 #   WAF_ACL_ARN             optional; required by the chart in prod
-#   ACCESS_LOG_BUCKET       optional; load balancer access logs stay off while it is empty (storage stack, task 5.1)
-# From the project environment: ENV_TYPE, CONTEXT, REGION_CODE, CLUSTER_NAME, REPOSITORY_URI, AWS_REGION.
+#   INGEST_QUEUE_URL        URL of the CSV ingestion queue (output IngestQueueUrl of the storage stack)
+#   INGEST_BUCKET           name of the CSV ingestion bucket (output IngestBucketName of the storage stack)
+#   ACCESS_LOG_BUCKET       optional; load balancer access logs stay off while it is empty (output AlbLogBucketName)
+# From the project environment: ENV_TYPE, CONTEXT, REGION_CODE, CLUSTER_NAME, REPOSITORY_URI, AWS_REGION and the
+# tag values TAG_TEAM_OWNER, TAG_PROJECT_NAME, TAG_APP_NAME, TAG_REPO_NAME (tags of the published parameters).
+# After the rollout the script publishes the load balancer registration for the shared edge (task 5.4):
+#   /<context>/<env>/api-backends/eks/dns-name and .../hosted-zone-id (only this role may write that path).
 # Nothing here prints a secret value or a resolved ARN: only names and counts.
 set -euo pipefail
 
@@ -24,6 +30,8 @@ NAMESPACE="calculator"
 RELEASE="calculator"
 HELM_TIMEOUT="10m"
 ROLLOUT_TIMEOUT="300s"
+ADDRESS_TIMEOUT_SECONDS="${ADDRESS_TIMEOUT_SECONDS:-300}"
+ADDRESS_POLL_SECONDS="${ADDRESS_POLL_SECONDS:-10}"
 MIGRATE_TIMEOUT_SECONDS="${MIGRATE_TIMEOUT_SECONDS:-960}"
 MIGRATE_POLL_SECONDS="${MIGRATE_POLL_SECONDS:-5}"
 
@@ -44,7 +52,8 @@ require() {
 
 # ---------------------------------------------------------------- 1. inputs
 require IMAGE_DIGEST RUN_ID ENV_TYPE CONTEXT REGION_CODE CLUSTER_NAME REPOSITORY_URI WEB_ORIGIN \
-  COGNITO_USER_POOL_ID COGNITO_APP_CLIENT_ID
+  COGNITO_USER_POOL_ID COGNITO_APP_CLIENT_ID INGEST_QUEUE_URL INGEST_BUCKET CONTEXT \
+  TAG_TEAM_OWNER TAG_PROJECT_NAME TAG_APP_NAME TAG_REPO_NAME
 region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
 [ -n "$region" ] || fail "AWS_REGION is required"
 
@@ -54,6 +63,8 @@ region="${AWS_REGION:-${AWS_DEFAULT_REGION:-}}"
 [[ "$WEB_ORIGIN" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?$ ]] || fail "WEB_ORIGIN must be an https origin without a path"
 [[ "$COGNITO_USER_POOL_ID" =~ ^[a-z0-9-]+_[A-Za-z0-9]+$ ]] || fail "COGNITO_USER_POOL_ID has an unexpected format"
 [[ "$COGNITO_APP_CLIENT_ID" =~ ^[a-z0-9]+$ ]] || fail "COGNITO_APP_CLIENT_ID has an unexpected format"
+[[ "$INGEST_QUEUE_URL" =~ ^https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/[A-Za-z0-9_-]+$ ]] || fail "INGEST_QUEUE_URL has an unexpected format"
+[[ "$INGEST_BUCKET" =~ ^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$ ]] || fail "INGEST_BUCKET has an unexpected format"
 [ -f "${chart_dir}/Chart.yaml" ] || fail "chart not found in ${chart_dir}"
 
 stack_prefix="stk-${REGION_CODE}-${CONTEXT}-eks"
@@ -97,6 +108,8 @@ set_args=(
   --set-string "ingress.securityGroupId=${alb_security_group}"
   --set-string "auth.userPoolId=${COGNITO_USER_POOL_ID}"
   --set-string "auth.appClientId=${COGNITO_APP_CLIENT_ID}"
+  --set-string "ingest.queueUrl=${INGEST_QUEUE_URL}"
+  --set-string "ingest.bucketName=${INGEST_BUCKET}"
 )
 [ -z "${WAF_ACL_ARN:-}" ] || set_args+=(--set-string "ingress.wafAclArn=${WAF_ACL_ARN}")
 [ -z "${ACCESS_LOG_BUCKET:-}" ] || set_args+=(--set-string "ingress.accessLogs.bucket=${ACCESS_LOG_BUCKET}")
@@ -152,12 +165,39 @@ for deployment in $deployments; do
   count=$((count + 1))
 done
 
-alb_address="$(kubectl --namespace "$NAMESPACE" get ingress calculator-api \
-  -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2> /dev/null || true)"
-if [ -n "$alb_address" ]; then
-  echo "Load balancer address: ${alb_address}"
-else
-  echo "NOTICE: the ingress has no address yet; the load balancer is still being created"
-fi
+# The controller creates the load balancer after the Ingress; wait for its address (it is the registration source)
+alb_address=""
+deadline=$((SECONDS + ADDRESS_TIMEOUT_SECONDS))
+while true; do
+  alb_address="$(kubectl --namespace "$NAMESPACE" get ingress calculator-api \
+    -o jsonpath='{.status.loadBalancer.ingress[0].hostname}' 2> /dev/null || true)"
+  [ -z "$alb_address" ] || break
+  [ "$SECONDS" -lt "$deadline" ] || break
+  sleep "$ADDRESS_POLL_SECONDS"
+done
+[ -n "$alb_address" ] || fail "the ingress has no load balancer address after ${ADDRESS_TIMEOUT_SECONDS} seconds; nothing was registered"
+echo "Load balancer address: ${alb_address}"
+
+# ---------------------------------------------------------------- 5. registration in the shared edge
+zone_id="$(aws elbv2 describe-load-balancers \
+  --query "LoadBalancers[?DNSName=='${alb_address}'].CanonicalHostedZoneId | [0]" --output text)" ||
+  fail "cannot read the load balancer"
+{ [ -n "$zone_id" ] && [ "$zone_id" != "None" ]; } || fail "no load balancer matches the ingress address"
+[[ "$zone_id" =~ ^Z[A-Z0-9]+$ ]] || fail "the canonical hosted zone id has an unexpected format"
+
+registry_path="/${CONTEXT}/${ENV_TYPE}/api-backends/eks"
+# publish <leaf> <value> <description>: overwrite the parameter, then tag it (put-parameter cannot tag an overwrite)
+publish() {
+  aws ssm put-parameter --name "${registry_path}/$1" --value "$2" --type String --overwrite \
+    --description "$3" > /dev/null || fail "cannot write ${registry_path}/$1"
+  aws ssm add-tags-to-resource --resource-type Parameter --resource-id "${registry_path}/$1" --tags \
+    "Key=team-owner,Value=${TAG_TEAM_OWNER}" "Key=project-name,Value=${TAG_PROJECT_NAME}" \
+    "Key=app-name,Value=${TAG_APP_NAME}" "Key=repo-name,Value=${TAG_REPO_NAME}" "Key=env-type,Value=${ENV_TYPE}" ||
+    fail "cannot tag ${registry_path}/$1"
+}
+publish dns-name "$alb_address" "DNS name of the EKS API load balancer"
+publish hosted-zone-id "$zone_id" "Canonical hosted zone id of the EKS API load balancer"
+echo "Registered ${registry_path}/dns-name and ${registry_path}/hosted-zone-id"
 
 echo "Summary: release ${RELEASE} deployed in ${ENV_TYPE}; ${count} deployments rolled out; migration ${job_name} succeeded; image ${IMAGE_DIGEST}"
+echo "NEXT STEP: deploy shared-resources again so that Route 53 reads the new API backend registration"

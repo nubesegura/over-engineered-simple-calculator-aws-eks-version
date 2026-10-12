@@ -51,6 +51,8 @@ PASSTHROUGH_REQUIRED = (
     "WEB_ORIGIN",
     "COGNITO_USER_POOL_ID",
     "COGNITO_APP_CLIENT_ID",
+    "INGEST_QUEUE_URL",
+    "INGEST_BUCKET",
 )
 PASSTHROUGH_OPTIONAL = ("WAF_ACL_ARN", "ACCESS_LOG_BUCKET")
 PASSTHROUGH_ALLOWED = (*PASSTHROUGH_REQUIRED, *PASSTHROUGH_OPTIONAL)
@@ -58,6 +60,9 @@ PASSTHROUGH_FORMATS = {
     "IMAGE_DIGEST": re.compile(r"sha256:[0-9a-f]{64}"),
     "RUN_ID": re.compile(r"[a-z0-9]([-a-z0-9]{0,30}[a-z0-9])?"),
     "WEB_ORIGIN": re.compile(r"https://[A-Za-z0-9.-]+(:[0-9]+)?"),
+    "INGEST_QUEUE_URL": re.compile(r"https://sqs\.[a-z0-9-]+\.amazonaws\.com/[0-9]{12}/[A-Za-z0-9_-]+"),
+    "INGEST_BUCKET": re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]"),
+    "ACCESS_LOG_BUCKET": re.compile(r"[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]"),
 }
 
 

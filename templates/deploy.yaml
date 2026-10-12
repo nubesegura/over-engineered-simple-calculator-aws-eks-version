@@ -2,7 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: >-
   Deployment stack: the CodeBuild project that runs Helm and kubectl inside the VPC (the cluster endpoint is
   private), its service role, encrypted log group, cluster access entry with the cluster admin policy, the
-  cluster security group rule for it and a rule that sends failed builds to the alerts topic.
+  cluster security group rule for it. Failed builds are alerted by the FailedBuilds alarm of the alarms stack.
 
 # How the pieces fit together (design decisions D5, D12, D15, D19):
 # - The GitHub workflow uploads the source archive (scripts and charts) to the SAM artifact bucket under
@@ -393,78 +393,6 @@ Resources:
       ToPort: 443
       SourceSecurityGroupId:
         Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-network-${EnvType}:CodeBuildSecurityGroupId"
-
-  # ---------------------------------------------------------
-  # Failed builds go to the alerts topic (the topic policy and the key policy allow EventBridge rules)
-  # ---------------------------------------------------------
-  # Events that could not be delivered to the topic (EVB-01). Encrypted with the data key by alias; the key policy
-  # lets EventBridge use it.
-  AlertsDeadLetterQueue:
-    Type: AWS::SQS::Queue
-    Properties:
-      QueueName: !Sub "sqs-${RegionCode}-${Context}-eks-deploy-events-dlq-${EnvType}"
-      KmsMasterKeyId:
-        Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:DataKeyAlias"
-      MessageRetentionPeriod: 1209600
-      ReceiveMessageWaitTimeSeconds: 20 # SQS-04
-
-  AlertsDeadLetterQueuePolicy:
-    Type: AWS::SQS::QueuePolicy
-    Properties:
-      Queues:
-        - !Ref AlertsDeadLetterQueue
-      PolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Sid: OnlyThisRuleSendsFailedEvents
-            Effect: Allow
-            Principal:
-              Service: events.amazonaws.com
-            Action: sqs:SendMessage
-            Resource: !GetAtt AlertsDeadLetterQueue.Arn
-            Condition:
-              ArnEquals:
-                aws:SourceArn: !GetAtt BuildFailedRule.Arn
-          - Sid: DenyInsecureTransport
-            Effect: Deny
-            Principal: "*"
-            Action:
-              - sqs:SendMessage
-              - sqs:ReceiveMessage
-              - sqs:DeleteMessage
-              - sqs:GetQueueAttributes
-            Resource: !GetAtt AlertsDeadLetterQueue.Arn
-            Condition:
-              Bool:
-                aws:SecureTransport: "false"
-
-  BuildFailedRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub "evr-${RegionCode}-${Context}-eks-deploy-failed-${EnvType}"
-      Description: A deployment build failed, timed out or crashed
-      State: ENABLED
-      EventPattern:
-        source: [aws.codebuild]
-        detail-type: [CodeBuild Build State Change]
-        detail:
-          build-status: [FAILED, FAULT, TIMED_OUT]
-          project-name: [!Ref DeployProject]
-      Targets:
-        - Id: AlertsTopic
-          Arn:
-            Fn::ImportValue: !Sub "stk-${RegionCode}-${Context}-eks-security-${EnvType}:AlertsTopicArn"
-          RetryPolicy: # EVB-02
-            MaximumRetryAttempts: 8
-            MaximumEventAgeInSeconds: 3600
-          DeadLetterConfig: # EVB-01
-            Arn: !GetAtt AlertsDeadLetterQueue.Arn
-          InputTransformer:
-            InputPathsMap:
-              project: $.detail.project-name
-              status: $.detail.build-status
-              build: $.detail.build-id
-            InputTemplate: '"Deployment build <project> ended with <status>: <build>"'
 
 Outputs:
   ProjectName:

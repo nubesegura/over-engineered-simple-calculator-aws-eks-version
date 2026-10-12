@@ -34,6 +34,8 @@ DEPLOY_VALUES: dict[str, str] = {
     "ingress.certificateArn": "arn:aws:acm:us-east-2:123456789012:certificate/example",
     "ingress.securityGroupId": "sg-0123456789abcdef0",
     "ingress.accessLogs.bucket": "example-alb-logs",
+    "ingest.queueUrl": "https://sqs.us-east-2.amazonaws.com/123456789012/example-ingest",
+    "ingest.bucketName": "example-ingest-bucket",
     "auth.userPoolId": POOL_ID,
     "auth.appClientId": CLIENT_ID,
 }

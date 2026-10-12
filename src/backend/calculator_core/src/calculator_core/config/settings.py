@@ -22,6 +22,17 @@ _REQUIRED = (
     "ALLOWED_ORIGIN",
     "SSL_ROOT_CERT",
 )
+INGEST_WORKLOAD = "ingest"
+_INGEST_REQUIRED = (
+    "AWS_REGION",
+    "ALERTS_TOPIC_ARN",
+    "APP_SECRET_ARN",
+    "DB_HOST",
+    "DB_NAME",
+    "SSL_ROOT_CERT",
+    "INGEST_QUEUE_URL",
+    "INGEST_BUCKET",
+)
 _DEFAULT_DB_PORT = 5432
 _DEFAULT_LOG_LEVEL = "INFO"
 _LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL")
@@ -83,6 +94,51 @@ def load_settings(workload: str, env: Mapping[str, str]) -> Settings:
         allowed_origin=value("ALLOWED_ORIGIN"),
         log_level=logging.getLevelNamesMapping()[level],
         cursor_key_secret_arn=cursor_secret,
+    )
+
+
+@dataclass(frozen=True)
+class IngestSettings:
+    environment: str
+    aws_region: str
+    alerts_topic_arn: str
+    app_secret_arn: str
+    db_host: str
+    db_port: int
+    db_name: str
+    ssl_root_cert: str
+    queue_url: str
+    bucket: str
+    log_level: int
+
+    @property
+    def service_name(self) -> str:
+        return f"calculator-{INGEST_WORKLOAD}"
+
+
+def load_ingest_settings(env: Mapping[str, str]) -> IngestSettings:
+    def value(name: str, default: str = "") -> str:
+        return env.get(name, "").strip() or default
+
+    problems = [f"{name} is required" for name in _INGEST_REQUIRED if not value(name)]
+    port = _parse_port(value("DB_PORT"), problems)
+    level = value("LOG_LEVEL", _DEFAULT_LOG_LEVEL).upper()
+    if level not in _LOG_LEVELS:
+        problems.append(f"LOG_LEVEL must be one of {', '.join(_LOG_LEVELS)}")
+    if problems:
+        raise SettingsError("Invalid configuration: " + "; ".join(problems) + ".")
+    return IngestSettings(
+        environment=value("ENVIRONMENT", "unknown"),
+        aws_region=value("AWS_REGION"),
+        alerts_topic_arn=value("ALERTS_TOPIC_ARN"),
+        app_secret_arn=value("APP_SECRET_ARN"),
+        db_host=value("DB_HOST"),
+        db_port=port,
+        db_name=value("DB_NAME"),
+        ssl_root_cert=value("SSL_ROOT_CERT"),
+        queue_url=value("INGEST_QUEUE_URL"),
+        bucket=value("INGEST_BUCKET"),
+        log_level=logging.getLevelNamesMapping()[level],
     )
 
 

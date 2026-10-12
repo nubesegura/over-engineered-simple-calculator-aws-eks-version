@@ -37,6 +37,12 @@
     "MetricsServerVersion": "v0.9.0-eksbuild.11",
     "WafAclArn": "",
     "AllowAutoscalerMinorSkew": "false",
+    "Alb5xxThreshold": "5",
+    "RdsFreeStorageBytesThreshold": "2147483648",
+    "RdsConnectionsThreshold": "80",
+    "RdsCpuPercentThreshold": "80",
+    "RdsFreeableMemoryBytesThreshold": "134217728",
+    "QueueOldestMessageSecondsThreshold": "900",
     "WebOrigin": "https://over-engineered-simple-calculator.nube-segura.com"
   },
   "Tags": {

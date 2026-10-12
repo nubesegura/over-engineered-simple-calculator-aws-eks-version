@@ -33,9 +33,12 @@ def test_migrate_runs_the_migration_and_returns_its_exit_code(
     assert cli.main(["migrate"]) == 7
 
 
-def test_ingest_is_a_clear_error_for_now(capsys: pytest.CaptureFixture[str]) -> None:
-    assert cli.main(["ingest"]) == 2
-    assert "not available" in capsys.readouterr().err
+def test_ingest_runs_the_worker_and_returns_its_exit_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(cli, "run_ingest_worker", lambda: 3)
+
+    assert cli.main(["ingest"]) == 3
 
 
 @pytest.mark.parametrize("args", [[], ["pow"], ["add", "extra"]])
