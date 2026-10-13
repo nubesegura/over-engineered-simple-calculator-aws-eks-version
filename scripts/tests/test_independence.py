@@ -41,8 +41,10 @@ def _intrinsic(loader: yaml.SafeLoader, suffix: str, node: yaml.Node) -> Any:
         value: Any = loader.construct_scalar(node)
     elif isinstance(node, yaml.SequenceNode):
         value = loader.construct_sequence(node, deep=True)
-    else:
+    elif isinstance(node, yaml.MappingNode):
         value = loader.construct_mapping(node, deep=True)
+    else:
+        raise TypeError(f"unsupported YAML node for !{suffix}")
     return {"Ref" if suffix == "Ref" else f"Fn::{suffix}": value}
 
 
