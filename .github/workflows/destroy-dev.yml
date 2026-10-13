@@ -144,6 +144,19 @@ jobs:
         if: ${{ inputs.mode == 'destroy' && steps.owner.outputs.owner == 'cloudformation' }}
         run: python3 scripts/cfn_deploy.py destroy --env dev --mode destroy
 
+      # Closing notice (destroy mode only, runs only when the destroy succeeded). The registration parameters of the
+      # shared API edge were removed with this backend; the weighted record lives in shared-resources.
+      - name: Closing notice for the owner
+        if: ${{ inputs.mode == 'destroy' && steps.owner.outputs.owner == 'cloudformation' }}
+        run: |
+          MSG="The eks backend is deregistered. Run Deploy DEV of over-engineered-simple-calculator-shared-resources (or wait for its daily drift check) so Route 53 drops the weighted record, and set API_WEIGHT_EKS to 0."
+          echo "$MSG"
+          {
+            echo "### Next step"
+            echo ""
+            echo "$MSG"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       # Read-only. Lists what the destroy left behind (tagged resources plus untagged kinds). Deletes can lag in
       # the tagging index, so it is retried; tombstones (deleted NAT gateways, deleting clusters) do not count.
       - name: Verify nothing is left behind

@@ -328,3 +328,13 @@ def test_destroy_runs_the_uninstall_flow_inside_the_single_destroy_step() -> Non
     names = [s.get("name") for s in steps(workflow)]
     assert names.index("Plan the destruction (CloudFormation)") < names.index("Destroy (CloudFormation)")
     assert "PLACEHOLDER" not in (WORKFLOWS / "destroy-dev.yml").read_text(encoding="utf-8")
+
+
+def test_destroy_ends_with_the_deregistration_notice_only_in_destroy_mode() -> None:
+    workflow = load("destroy-dev.yml")
+    names = [s.get("name") for s in steps(workflow)]
+    step = {s.get("name"): s for s in steps(workflow)}["Closing notice for the owner"]
+    assert "inputs.mode == 'destroy'" in step["if"]
+    assert "API_WEIGHT_EKS" in step["run"] and "shared-resources" in step["run"]
+    assert "GITHUB_STEP_SUMMARY" in step["run"]
+    assert names.index("Destroy (CloudFormation)") < names.index("Closing notice for the owner")
