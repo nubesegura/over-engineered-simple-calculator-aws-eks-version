@@ -51,6 +51,10 @@ def test_production_controls_are_on_and_dev_is_cheap() -> None:
     assert dev["DbMultiAz"] == "false" and dev["DbDeletionProtection"] == "false"
     assert int(prod["DbBackupRetentionDays"]) == 15 and int(dev["DbBackupRetentionDays"]) == 1
     assert prod["EnableBastion"] == "false" and dev["EnableBastion"] == "true"
+    assert prod["EnableDbLogExports"] == "true" and dev["EnableDbLogExports"] == "false"
+    assert prod["ForceDestroyData"] == "false" and dev["ForceDestroyData"] == "true"
+    assert int(prod["LogRetentionDays"]) == 90 and int(prod["AlbLogRetentionDays"]) >= 90
+    assert prod["WafAclArn"] == "" and dev["WafAclArn"] == ""  # the ARN is injected (WAF_ACL_ARN), never committed
 
 
 def test_stacks_list_has_the_agreed_order_and_names() -> None:

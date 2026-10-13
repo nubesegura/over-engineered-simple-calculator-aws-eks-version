@@ -120,6 +120,7 @@ class World:
         self.log_groups: list[str] = []
         cli.on("logs describe-log-groups", lambda _a: {"logGroups": [{"logGroupName": n} for n in self.log_groups]})
         cli.on("logs delete-log-group", self.delete_log_group)
+        cli.on("bash scripts/destroy_registry.sh", Reply("Registration removed (2 of 2 parameters existed)."))
         cli.on("sam build", Reply())
         cli.on("sam package", Reply())
 
@@ -747,7 +748,7 @@ def test_destroy_deletes_in_reverse_order_and_removes_the_nat_first(
     assert cli.called("s3api delete-objects")
     assert cli.called("ecr batch-delete-image")
     assert world.statuses == {}
-    assert "Helm uninstall for dev: not implemented yet (task 7.1)" in capsys.readouterr().out
+    assert "nothing to uninstall, the NAT gateway is not touched" in capsys.readouterr().out
 
 
 def test_destroy_skips_emptying_repositories_with_empty_on_delete(repo: Path, cli: FakeCli) -> None:

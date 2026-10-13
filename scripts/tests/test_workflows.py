@@ -316,10 +316,15 @@ def test_alarms_are_deployed_alone_after_the_release_with_the_discovered_dimensi
     assert alarms_run == 'python scripts/cfn_deploy.py deploy --env dev --only "$LAST_UNIT"'
 
 
-def test_destroy_removes_the_registration_before_the_stacks_are_deleted() -> None:
+def test_destroy_runs_the_uninstall_flow_inside_the_single_destroy_step() -> None:
     workflow = load("destroy-dev.yml")
-    names = [step.get("name") for step in steps(workflow)]
-    step = steps(workflow)[names.index("Remove the API backend registration (SSM)")]
-    assert "scripts/destroy_registry.sh" in step["run"] and "ENV_TYPE=dev" in step["run"]
+    by_name = {step.get("name"): step for step in steps(workflow)}
+    assert "Remove the API backend registration (SSM)" not in by_name  # now part of cfn_deploy.py destroy
+    step = by_name["Destroy (CloudFormation)"]
+    assert step["run"] == "python3 scripts/cfn_deploy.py destroy --env dev --mode destroy"
     assert "inputs.mode == 'destroy'" in step["if"]
-    assert names.index("Remove the API backend registration (SSM)") < names.index("Destroy (CloudFormation)")
+    plan = by_name["Plan the destruction (CloudFormation)"]
+    assert plan["run"].endswith("--mode plan") and "if" in plan
+    names = [s.get("name") for s in steps(workflow)]
+    assert names.index("Plan the destruction (CloudFormation)") < names.index("Destroy (CloudFormation)")
+    assert "PLACEHOLDER" not in (WORKFLOWS / "destroy-dev.yml").read_text(encoding="utf-8")

@@ -10,8 +10,10 @@ name: Destroy DEV
 # CloudFormation only: owner=cloudformation deletes the stacks of templates/stacks.json in reverse deploy
 # order (scripts/cfn_deploy.py destroy); owner=none ends green without destroying anything; owner=terraform,
 # owner=both or an unreadable owner fails closed.
-# Destroy order: (task 7.1 will add first the Helm uninstall through CodeBuild and the wait for the load
-# balancer to disappear), then the stacks in reverse order, then the leftover check.
+# Destroy order, all inside scripts/cfn_deploy.py destroy: the Helm uninstall of the calculator release and the
+# controllers through the CodeBuild deployment project (the NAT gateway is recreated only for that build), the wait
+# until the load balancer, target groups and controller security groups are gone, the removal of the SSM API
+# backend registration, then the stacks in reverse order; then the leftover check.
 on:
   workflow_dispatch:
     inputs:
@@ -135,19 +137,8 @@ jobs:
         if: steps.owner.outputs.owner == 'cloudformation'
         run: python3 scripts/cfn_deploy.py destroy --env dev --mode plan
 
-      # PLACEHOLDER (task 7.1): uninstall the calculator release and the controllers through the CodeBuild
-      # project, then wait until the load balancer, target groups and controller-created security groups with
-      # this cluster's tags are gone. Until that task, scripts/cfn_deploy.py destroy only prints a notice.
-
-      # Task 5.4: remove the load balancer registration the deployment published for the shared edge. Minimal
-      # version; task 7.1 moves this call into the uninstall flow, after the load balancer is gone.
-      - name: Remove the API backend registration (SSM)
-        if: ${{ inputs.mode == 'destroy' && steps.owner.outputs.owner == 'cloudformation' }}
-        run: |
-          set -euo pipefail
-          CONTEXT=$(jq -r '.Parameters.Context' parameters/dev.json) ENV_TYPE=dev bash scripts/destroy_registry.sh
-
-      # Per stack: termination protection off, empty this project's buckets and repositories, delete-stack,
+      # Mode destroy: uninstall through the build project, wait for the load balancer, remove the SSM registration;
+      # then per stack: termination protection off, empty this project's buckets and repositories, delete-stack,
       # wait. The scheduler removes the NAT gateway first whether or not it exists. Stops on DELETE_FAILED.
       - name: Destroy (CloudFormation)
         if: ${{ inputs.mode == 'destroy' && steps.owner.outputs.owner == 'cloudformation' }}

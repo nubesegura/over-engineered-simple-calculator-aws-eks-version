@@ -14,7 +14,9 @@ Commands:
                                                         deploys that unit alone (the alarms stack, after the
                                                         Helm step has created the load balancer)
     output   --env dev --unit cluster --key ClusterName print one stack output
-    destroy  --env dev --mode plan|destroy              list or delete the stacks in reverse order
+    destroy  --env dev --mode plan|destroy              list, or uninstall the Helm releases through the build
+                                                        project, wait for the load balancer, remove the SSM
+                                                        registration and delete the stacks in reverse order
     params   --env dev --unit scheduler                 print the parameters a stack would receive
 
 Parameter values come from parameters/<env>.json (the only place with environment values). SUPPORT_EMAIL
@@ -708,14 +710,170 @@ def plan_stack(entry: dict[str, Any], status: str) -> list[str]:
     return lines
 
 
-def uninstall_helm_releases(env: str) -> None:
-    """PLACEHOLDER for task 7.1: uninstall the calculator release and the controllers through CodeBuild.
+USABLE_STATUSES = ("CREATE_COMPLETE", "UPDATE_COMPLETE", "UPDATE_ROLLBACK_COMPLETE", "IMPORT_COMPLETE")
+# Tag keys the AWS Load Balancer Controller puts on the load balancers, target groups and security groups it creates
+# (the value is the cluster name).
+CONTROLLER_TAG_KEYS = ("elbv2.k8s.aws/cluster", "ingress.k8s.aws/cluster")
+HELM_RELEASES = ("calculator", "cluster-autoscaler", "aws-load-balancer-controller")
+CONTROLLER_WAIT_SECONDS = 20 * 60
+CONTROLLER_POLL_SECONDS = 20
+TAG_BATCH = 20  # describe-tags accepts at most 20 ARNs
 
-    Task 7.1 starts the deployment build project in uninstall mode here and waits until the load balancer,
-    target groups and controller-created security groups with this cluster's tags are gone, so that the
-    network stack can be deleted. Until then this step only says so; the Helm releases do not exist yet.
+Present = dict[str, tuple[dict[str, Any], str]]
+
+
+def unit_usable(present: Present, unit: str) -> bool:
+    """True when the stack of the unit exists in a state where its resources can be used."""
+    return unit in present and present[unit][1] in USABLE_STATUSES
+
+
+def cluster_name(present: Present) -> str | None:
+    if not unit_usable(present, "cluster"):
+        return None
+    return stack_outputs(present["cluster"][0]["stack"]).get("ClusterName")
+
+
+def vpc_id(present: Present) -> str | None:
+    if not unit_usable(present, "network"):
+        return None
+    return stack_outputs(present["network"][0]["stack"]).get("VpcId")
+
+
+def is_controller_tag(tags: list[dict[str, str]], cluster: str | None) -> bool:
+    return any(t.get("Key") in CONTROLLER_TAG_KEYS and (not cluster or t.get("Value") == cluster) for t in tags)
+
+
+def tagged_elb_names(kind: str, vpc: str, cluster: str | None) -> list[str]:
+    """Names of the load balancers or target groups of the VPC that carry the controller tag (read-only)."""
+    if kind == "load balancer":
+        listing, list_key, arn_key, name_key = (
+            "describe-load-balancers",
+            "LoadBalancers",
+            "LoadBalancerArn",
+            "LoadBalancerName",
+        )
+    else:
+        listing, list_key, arn_key, name_key = (
+            "describe-target-groups",
+            "TargetGroups",
+            "TargetGroupArn",
+            "TargetGroupName",
+        )
+    items = [i for i in (aws_json(["elbv2", listing]) or {}).get(list_key, []) if i.get("VpcId") == vpc]
+    names = {i[arn_key]: i[name_key] for i in items}
+    arns = list(names)
+    found: list[str] = []
+    for first in range(0, len(arns), TAG_BATCH):
+        described = aws_json(["elbv2", "describe-tags", "--resource-arns", *arns[first : first + TAG_BATCH]]) or {}
+        for description in described.get("TagDescriptions", []):
+            if is_controller_tag(description.get("Tags", []), cluster):
+                found.append(f"{kind} {names.get(description['ResourceArn'], '?')}")
+    return found
+
+
+def controller_resources(vpc: str, cluster: str | None) -> list[str]:
+    """Load balancers, target groups and security groups the controller created in the VPC (read-only)."""
+    found = tagged_elb_names("load balancer", vpc, cluster) + tagged_elb_names("target group", vpc, cluster)
+    groups = aws_json(
+        [
+            "ec2",
+            "describe-security-groups",
+            "--filters",
+            f"Name=vpc-id,Values={vpc}",
+            f"Name=tag-key,Values={','.join(CONTROLLER_TAG_KEYS)}",
+        ]
+    )
+    for group in (groups or {}).get("SecurityGroups", []):
+        if is_controller_tag(group.get("Tags", []), cluster):
+            found.append(f"security group {group['GroupId']} ({group.get('GroupName', '')})")
+    return found
+
+
+def wait_controller_resources(vpc: str, cluster: str | None) -> None:
+    """Wait until the controller-created load balancers, target groups and security groups are gone."""
+    deadline = time.monotonic() + CONTROLLER_WAIT_SECONDS
+    while True:
+        found = controller_resources(vpc, cluster)
+        if not found:
+            print("No load balancer, target group or controller security group is left in the VPC")
+            return
+        if time.monotonic() >= deadline:
+            raise DeployError(
+                f"timed out after {CONTROLLER_WAIT_SECONDS // 60} minutes: the controller did not remove "
+                f"{'; '.join(found)}. The network stack cannot be deleted while they exist. Check the controller "
+                "logs, delete them by hand if the controller is gone, then run the destroy again."
+            )
+        print(f"Waiting for the controller to remove: {'; '.join(found)}")
+        time.sleep(CONTROLLER_POLL_SECONDS)
+
+
+def start_uninstall_build(env: str) -> None:
+    """Run the deployment build project with DEPLOY_COMMAND=uninstall (scripts/run_deploy_build.py waits for it)."""
+    script = REPO_ROOT / "scripts" / "run_deploy_build.py"
+    completed = subprocess.run(  # noqa: S603
+        [sys.executable, str(script), "run", "--env", env, "--command", "uninstall"], check=False
+    )
+    if completed.returncode != 0:
+        raise DeployError("the uninstall build failed: the release and the controllers may still be installed")
+
+
+def uninstall_plan(present: Present) -> list[str]:
+    """Markdown lines of what the destroy does before the stacks (read-only)."""
+    lines = ["#### Before the stacks: uninstall and waits"]
+    if unit_usable(present, "cluster") and unit_usable(present, "deploy"):
+        nat = (
+            "the NAT gateway is recreated first with the scheduler function if it is down (the build downloads "
+            "kubectl and helm) and removed again with the scheduler stack"
+            if unit_usable(present, "scheduler")
+            else "no scheduler stack: the network is used as it is"
+        )
+        lines.append(f"- Build in uninstall mode will run; {nat}")
+        lines.append(
+            f"- Helm releases removed if installed: {', '.join(HELM_RELEASES)} (the cluster endpoint is private, "
+            "so the runner cannot list them; the build skips the absent ones)"
+        )
+    else:
+        lines.append("- No usable cluster and deployment stack: no build, no NAT gateway is recreated")
+    vpc = vpc_id(present)
+    if vpc:
+        found = controller_resources(vpc, cluster_name(present))
+        lines.append(f"- Controller resources in the VPC now: {'; '.join(found) if found else 'none'}")
+    else:
+        lines.append("- No network stack: nothing to wait for")
+    lines.append("- SSM parameters removed: the dns-name and hosted-zone-id of the API backend registration")
+    return lines
+
+
+def uninstall_helm_releases(env: str, present: Present) -> None:
+    """Uninstall the release and the controllers through the build project, then wait for the load balancer.
+
+    The build runs only when the cluster and the deployment stack are usable. The NAT gateway is recreated only
+    for the build (the scheduler stack removes it again when it is deleted); with no build nothing is recreated.
     """
-    print(f"Helm uninstall for {env}: not implemented yet (task 7.1); no release is installed by this milestone.")
+    if unit_usable(present, "cluster") and unit_usable(present, "deploy"):
+        if unit_usable(present, "scheduler"):
+            nat_up(present["scheduler"][0]["stack"])
+        start_uninstall_build(env)
+    else:
+        print("No usable cluster and deployment stack: nothing to uninstall, the NAT gateway is not touched")
+    vpc = vpc_id(present)
+    if vpc:
+        wait_controller_resources(vpc, cluster_name(present))
+
+
+def remove_registration(context: str, env: str) -> None:
+    """Remove the API backend parameters of the shared edge (scripts/destroy_registry.sh; absent ones are fine)."""
+    completed = subprocess.run(  # noqa: S603
+        ["bash", "scripts/destroy_registry.sh"],  # noqa: S607
+        cwd=REPO_ROOT,
+        env={**os.environ, "ENV_TYPE": env, "CONTEXT": context},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    print(completed.stdout.strip())
+    if completed.returncode != 0:
+        raise DeployError(f"cannot remove the API backend registration: {completed.stderr.strip()[:500]}")
 
 
 def proxy_log_group_name(config: dict[str, Any], env: str) -> str:
@@ -778,6 +936,7 @@ def command_destroy(args: argparse.Namespace) -> int:
     entries = load_stacks(args.env)
     present = [(entry, stack_status(entry["stack"])) for entry in reversed(entries)]
     present = [(entry, status) for entry, status in present if status is not None]
+    by_unit: Present = {entry["unit"]: (entry, status or "") for entry, status in present}
     summary = [
         "### Destroy DEV with CloudFormation",
         "",
@@ -788,13 +947,17 @@ def command_destroy(args: argparse.Namespace) -> int:
         summary.extend(plan_stack(entry, status or ""))
     if not present:
         summary.append("Nothing is deployed: nothing to destroy.")
+    else:
+        summary.extend(["", *uninstall_plan(by_unit)])
     print("\n".join(summary))
     write_step_summary(summary)
     if args.mode != "destroy":
         print("Nothing was deleted (mode plan).")
         return 0
     if present:
-        uninstall_helm_releases(args.env)
+        uninstall_helm_releases(args.env, by_unit)
+    remove_registration(config["Parameters"]["Context"], args.env)  # after the load balancer is gone
+    if present:
         for entry, _ in present:
             destroy_stack(entry, config["Parameters"]["Context"])
     remove_proxy_log_group(config, args.env)  # safeguard: only after every stack of this repository is gone

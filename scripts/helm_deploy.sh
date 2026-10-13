@@ -12,9 +12,9 @@
 # Passed by the workflow with StartBuild (non-secret):
 #   IMAGE_DIGEST            sha256:<64 hex> of the image just pushed
 #   RUN_ID                  short lowercase label (the workflow run number); names the migration Job
-#   WEB_ORIGIN              https origin of the page (CORS), same source as the ecs version (parameter WebOrigin)
-#   COGNITO_USER_POOL_ID    Cognito pool of the webpage repository (GitHub variable, as in ecs)
-#   COGNITO_APP_CLIENT_ID   app client of that pool (GitHub variable, as in ecs)
+#   WEB_ORIGIN              https origin of the page (CORS), parameter WebOrigin
+#   COGNITO_USER_POOL_ID    Cognito pool of the webpage repository (GitHub variable)
+#   COGNITO_APP_CLIENT_ID   app client of that pool (GitHub variable)
 #   WAF_ACL_ARN             optional; required by the chart in prod
 #   INGEST_QUEUE_URL        URL of the CSV ingestion queue (output IngestQueueUrl of the storage stack)
 #   INGEST_BUCKET           name of the CSV ingestion bucket (output IngestBucketName of the storage stack)

@@ -10,7 +10,7 @@ name: Deploy
 # The deployment role has PowerUserAccess: no IAM change.
 #
 # SAM build: the runner has Python 3.14 (setup-python), the runtime of both functions, so `sam build` builds
-# natively and no container is used (same approach as the ecs repository).
+# natively and no container is used.
 on:
   workflow_call:
     inputs:
