@@ -34,10 +34,12 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
 {{- printf "%s@%s" $repository $digest -}}
 {{- end -}}
 
-{{/* Environment shared by every pod: plain values, none is a secret. */}}
+{{/* Environment shared by every pod (HTTP, worker, migrate job), ENVIRONMENT included: plain values, none is a secret. */}}
 {{- define "calc.envCommon" -}}
 - name: AWS_REGION
   value: {{ .Values.region | quote }}
+- name: ENVIRONMENT
+  value: {{ required "envType is required (dev or prod)" .Values.envType | quote }}
 - name: ALERTS_TOPIC_ARN
   value: {{ required "app.alertsTopicArn is required" .Values.app.alertsTopicArn | quote }}
 - name: APP_SECRET_ARN
@@ -61,11 +63,9 @@ app.kubernetes.io/instance: {{ .root.Release.Name }}
   value: {{ required "app.allowedOrigin is required" .Values.app.allowedOrigin | quote }}
 {{- end -}}
 
-{{/* The ingestion worker: common settings plus the queue, the bucket and the environment name. */}}
+{{/* The ingestion worker: common settings plus the queue and the bucket. */}}
 {{- define "calc.workerEnv" -}}
 {{ include "calc.envCommon" . }}
-- name: ENVIRONMENT
-  value: {{ required "envType is required (dev or prod)" .Values.envType | quote }}
 - name: INGEST_QUEUE_URL
   value: {{ required "ingest.queueUrl is required for the ingest worker" .Values.ingest.queueUrl | quote }}
 - name: INGEST_BUCKET

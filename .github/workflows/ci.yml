@@ -275,7 +275,8 @@ jobs:
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # Nothing is pushed to a registry from CI; the image stays on the runner. The build downloads the RDS CA
-      # bundle from truststore.pki.rds.amazonaws.com (validated by src/rotation/package_bundle.py).
+      # bundle from truststore.pki.rds.amazonaws.com and the four Amazon roots (pinned by SHA-256) from amazontrust.com
+      # into one trust file (/app/db-trust-bundle.pem), built and validated by src/rotation/package_bundle.py.
       - name: Build the image
         if: steps.dockerfile.outputs.present == 'true'
         run: |
@@ -312,7 +313,7 @@ jobs:
         if: steps.dockerfile.outputs.present == 'true'
         run: |
           set -euo pipefail
-          docker run --detach --name calculator-add --platform linux/arm64 --read-only --tmpfs /tmp:rw,noexec,nosuid,uid=10001,gid=10001             --publish 8443:8443             --env AWS_REGION=us-east-2 --env ENVIRONMENT=ci             --env ALERTS_TOPIC_ARN=arn:aws:sns:us-east-2:000000000000:example-alerts             --env APP_SECRET_ARN=arn:aws:secretsmanager:us-east-2:000000000000:secret:example-app             --env DB_HOST=db.example.invalid --env DB_NAME=calculator             --env ALLOWED_ORIGIN=https://example.invalid             --env SSL_ROOT_CERT=/app/rds-global-bundle.pem             "$IMAGE" add
+          docker run --detach --name calculator-add --platform linux/arm64 --read-only --tmpfs /tmp:rw,noexec,nosuid,uid=10001,gid=10001             --publish 8443:8443             --env AWS_REGION=us-east-2 --env ENVIRONMENT=ci             --env ALERTS_TOPIC_ARN=arn:aws:sns:us-east-2:000000000000:example-alerts             --env APP_SECRET_ARN=arn:aws:secretsmanager:us-east-2:000000000000:secret:example-app             --env DB_HOST=db.example.invalid --env DB_NAME=calculator             --env ALLOWED_ORIGIN=https://example.invalid             --env SSL_ROOT_CERT=/app/db-trust-bundle.pem             "$IMAGE" add
           code=000
           for _ in $(seq 1 30); do
             code=$(curl -ksS -o "$RUNNER_TEMP/health.json" -w '%{http_code}' https://localhost:8443/health || true)

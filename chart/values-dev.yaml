@@ -5,7 +5,7 @@ replicaCount: 1
 
 app:
   allowedOrigin: https://dev.example.invalid
-  logLevel: DEBUG
+  logLevel: INFO   # pods log at INFO in dev too: DEBUG is a temporary owner override (--set-string app.logLevel=DEBUG)
 
 network:
   vpcCidr: 10.30.0.0/16   # parameters/dev.json VpcCidr

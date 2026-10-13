@@ -16,7 +16,7 @@ FULL = {
     "DB_NAME": "calculator",
     "ALLOWED_ORIGIN": "https://app.example.test",
     "LOG_LEVEL": "debug",
-    "SSL_ROOT_CERT": "/app/rds-global-bundle.pem",
+    "SSL_ROOT_CERT": "/app/db-trust-bundle.pem",
 }
 REQUIRED = [name for name in FULL if name not in ("DB_PORT", "LOG_LEVEL")]
 CURSOR_ARN = "arn:aws:secretsmanager:us-east-2:000000000000:secret:cursor"

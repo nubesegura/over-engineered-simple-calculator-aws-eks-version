@@ -1,8 +1,17 @@
 import json
 import logging
 
+import pytest
+
 from calculator_core.application.errors import InfrastructureError
-from calculator_core.config.observability import JsonFormatter, set_request_context
+from calculator_core.config.observability import (
+    QUIET_LIBRARY_LOGGERS,
+    REDACTED,
+    JsonFormatter,
+    RedactingFilter,
+    configure_logging,
+    set_request_context,
+)
 
 
 def _format(record: logging.LogRecord) -> dict[str, object]:
@@ -67,3 +76,67 @@ def test_entry_omits_context_when_absent_and_logs_exception_type_only() -> None:
     assert "correlation_id" not in entry
     assert entry["exception_type"] == "ValueError"
     assert "hunter2" not in json.dumps(entry)
+
+
+def _configure_and_capture(
+    level: str, capsys: pytest.CaptureFixture[str]
+) -> list[dict[str, object]]:
+    saved = (logging.getLogger().handlers[:], logging.getLogger().level)
+    try:
+        configure_logging("calc-add", "dev", level)
+        for name in (
+            "botocore.endpoint",
+            "boto3.resources",
+            "urllib3.connectionpool",
+            "s3transfer.tasks",
+            "psycopg",
+        ):
+            logging.getLogger(name).debug(
+                "Request headers: {'x-amz-security-token': 'IQoJb3JpZ2luX2VjEXAMPLE'}"
+            )
+        logging.getLogger("calculator_core.app").debug("application debug record")
+        return [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    finally:
+        logging.getLogger().handlers[:] = saved[0]
+        logging.getLogger().setLevel(saved[1])
+
+
+def test_library_loggers_never_log_below_warning_even_with_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    entries = _configure_and_capture("DEBUG", capsys)
+
+    assert [e["logger"] for e in entries] == ["calculator_core.app"]
+    for name in QUIET_LIBRARY_LOGGERS:
+        assert logging.getLogger(name).getEffectiveLevel() >= logging.WARNING
+    assert set(QUIET_LIBRARY_LOGGERS) >= {"botocore", "boto3", "urllib3", "s3transfer", "psycopg"}
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "{'x-amz-security-token': 'IQoJb3JpZ2luX2VjEXAMPLE'}",
+        "{'Authorization': b'AWS4-HMAC-SHA256 Credential=AKIAEXAMPLE/2026/s3, Signature=abc'}",
+        "AWS4-HMAC-SHA256 Credential=ASIAEXAMPLE/20261013/us-east-2/sqs/aws4_request",
+        "AWS_SESSION_TOKEN=IQoJb3JpZ2luX2VjEXAMPLE",
+        "aws_secret_access_key = wJalrEXAMPLEKEY",
+    ],
+)
+def test_credential_looking_values_are_redacted_from_any_record(message: str) -> None:
+    record = _record("%s")
+    record.args = (message,)
+
+    assert RedactingFilter().filter(record)
+    entry = _format(record)
+
+    text = json.dumps(entry)
+    for leaked in ("EXAMPLE", "Signature=abc", "wJalr"):
+        assert leaked not in text
+    assert REDACTED in text
+
+
+def test_normal_messages_are_not_changed() -> None:
+    record = _record("Calculation done for operation add")
+
+    assert RedactingFilter().filter(record)
+    assert _format(record)["message"] == "Calculation done for operation add"

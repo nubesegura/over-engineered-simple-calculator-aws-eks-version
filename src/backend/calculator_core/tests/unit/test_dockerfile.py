@@ -48,5 +48,18 @@ def test_only_runtime_requirements_are_installed_and_the_ca_bundle_is_in_place(
 
     assert "requirements-dev" not in text
     assert "COPY calculator_core/requirements.txt" in text
-    assert "/app/rds-global-bundle.pem" in text
+    assert "/app/db-trust-bundle.pem" in text
     assert "WORKDIR /app" in lines
+
+
+def test_the_trust_file_is_built_by_the_helper_and_is_root_owned_and_read_only(
+    lines: list[str],
+) -> None:
+    text = "\n".join(lines)
+
+    assert "RUN python /helper/package_bundle.py --trust-bundle /db-trust-bundle.pem" in lines
+    assert (
+        "COPY --from=bundle --chown=root:root --chmod=0444 "
+        "/db-trust-bundle.pem /app/db-trust-bundle.pem" in lines
+    )
+    assert "rds-global-bundle" not in text

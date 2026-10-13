@@ -172,6 +172,7 @@ def test_topology_spread_across_zones(docs: list[Doc]) -> None:
 def test_environment_variables_are_plain_and_complete(docs: list[Doc]) -> None:
     expected = {
         "AWS_REGION",
+        "ENVIRONMENT",
         "ALERTS_TOPIC_ARN",
         "APP_SECRET_ARN",
         "DB_HOST",
@@ -182,7 +183,7 @@ def test_environment_variables_are_plain_and_complete(docs: list[Doc]) -> None:
     }
     extra = {
         "history": {"ALLOWED_ORIGIN", "CURSOR_KEY_SECRET_ARN"},
-        WORKER: {"ENVIRONMENT", "INGEST_QUEUE_URL", "INGEST_BUCKET"},
+        WORKER: {"INGEST_QUEUE_URL", "INGEST_BUCKET"},
     }
     for deployment in of_kind(docs, "Deployment"):
         env = {e["name"]: e for e in deployment["spec"]["template"]["spec"]["containers"][0]["env"]}
@@ -190,7 +191,16 @@ def test_environment_variables_are_plain_and_complete(docs: list[Doc]) -> None:
         assert set(env) == expected | extra.get(name, {"ALLOWED_ORIGIN"})
         assert all(set(e) == {"name", "value"} for e in env.values())
         assert env["DB_PORT"]["value"] == "5432"
-        assert env["SSL_ROOT_CERT"]["value"] == "/app/rds-global-bundle.pem"
+        assert env["SSL_ROOT_CERT"]["value"] == "/app/db-trust-bundle.pem"
+
+
+def test_every_workload_and_the_migrate_job_get_the_environment_and_log_level_info(env: str, docs: list[Doc]) -> None:
+    pods = [*of_kind(docs, "Deployment"), *of_kind(docs, "Job")]
+    assert len(pods) == len(HTTP) + 2  # the HTTP workloads, the ingest worker and the migrate job
+    for workload in pods:
+        values = {e["name"]: e["value"] for e in workload["spec"]["template"]["spec"]["containers"][0]["env"]}
+        assert values["ENVIRONMENT"] == env, workload["metadata"]["name"]
+        assert values["LOG_LEVEL"] == "INFO", workload["metadata"]["name"]  # DEBUG only by an explicit owner override
 
 
 def test_services_are_cluster_ip_on_8443(docs: list[Doc]) -> None:

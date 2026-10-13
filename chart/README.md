@@ -46,3 +46,5 @@ Prod also needs `ingress.wafAclArn` (the render stops without it). Tests: `pytho
   pod or namespace selector can name: ingress to the API pods is allowed from the VPC CIDR (`ipBlock`) on 8443; the
   security groups (only the load balancer group reaches the pod port) narrow it. `allow-pod-identity-egress`
   (169.254.170.23:80) is needed so that pods can obtain their pod identity credentials.
+- **Environment and logging.** Every pod and the migrate job get `ENVIRONMENT` (= `envType`) and `LOG_LEVEL` (= `app.logLevel`, `INFO` in dev and prod). DEBUG only as an explicit, temporary override (`--set-string app.logLevel=DEBUG`); the application keeps `botocore`, `boto3`, `urllib3`, `s3transfer` and `psycopg` at WARNING even then.
+- **Database trust file.** `app.sslRootCert` (`/app/db-trust-bundle.pem`) holds the RDS global bundle plus the Amazon Root CA 1 to 4: RDS Proxy presents an ACM certificate, which does not chain to the RDS CAs.

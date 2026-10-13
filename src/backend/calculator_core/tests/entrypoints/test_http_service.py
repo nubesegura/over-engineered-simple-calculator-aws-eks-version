@@ -16,7 +16,7 @@ ENV = {
     "DB_HOST": "db.internal",
     "DB_NAME": "calculator",
     "ALLOWED_ORIGIN": "https://app.example.test",
-    "SSL_ROOT_CERT": "/app/rds-global-bundle.pem",
+    "SSL_ROOT_CERT": "/app/db-trust-bundle.pem",
     "CURSOR_KEY_SECRET_ARN": "arn:aws:secretsmanager:us-east-2:000000000000:secret:cursor",
 }
 

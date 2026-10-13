@@ -36,7 +36,7 @@ app:
   dbName: calculator
   allowedOrigin: ""     # CORS origin of the page
   logLevel: INFO
-  sslRootCert: /app/rds-global-bundle.pem
+  sslRootCert: /app/db-trust-bundle.pem
 
 # CSV ingestion worker settings: both come from the storage stack outputs (IngestQueueUrl, IngestBucketName)
 ingest:

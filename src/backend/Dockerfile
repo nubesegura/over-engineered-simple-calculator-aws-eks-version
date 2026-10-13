@@ -25,11 +25,14 @@ COPY calculator_core/pyproject.toml ./calculator_core/pyproject.toml
 COPY calculator_core/src ./calculator_core/src
 RUN pip install --no-deps ./calculator_core
 
-# ---- CA bundle stage: download over verified HTTPS and validate with the rotation helper ----
+# ---- CA bundle stage: one trust file for libpq, built and validated with the rotation helper ----
+# The file holds the RDS global bundle (direct connections to the instance: the migration job) plus the four
+# Amazon Trust Services roots (RDS Proxy presents an ACM certificate that chains to them, not to the RDS CAs).
+# Everything is downloaded over verified HTTPS; the Amazon roots are pinned by SHA-256 in package_bundle.py.
 # hadolint ignore=DL3029
 FROM --platform=linux/arm64 ${PYTHON_IMAGE} AS bundle
 COPY --from=rotation package_bundle.py /helper/package_bundle.py
-RUN python -c "import sys; sys.path.insert(0, '/helper'); import package_bundle as b; data = b.fetch_bundle(); b.validate_bundle(data); open('/rds-global-bundle.pem', 'wb').write(data)"
+RUN python /helper/package_bundle.py --trust-bundle /db-trust-bundle.pem
 
 # ---- runtime stage ----
 # hadolint ignore=DL3029
@@ -41,7 +44,7 @@ RUN groupadd --system --gid 10001 app \
 
 COPY --from=build /opt/venv /opt/venv
 WORKDIR /app
-COPY --from=bundle --chown=root:root /rds-global-bundle.pem /app/rds-global-bundle.pem
+COPY --from=bundle --chown=root:root --chmod=0444 /db-trust-bundle.pem /app/db-trust-bundle.pem
 COPY --chown=root:root migrations /app/migrations
 
 # Code, CA bundle and migration files are read-only for the process. The only writable path is

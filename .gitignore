@@ -14,6 +14,7 @@ references/
 *.packaged.yaml
 *.zip
 rds-global-bundle.pem
+db-trust-bundle.pem
 
 # Secrets and state, never versioned
 .env

@@ -7,6 +7,7 @@ frames hold no values.
 
 import json
 import logging
+import re
 import sys
 import traceback
 from contextvars import ContextVar
@@ -19,6 +20,33 @@ from calculator_core.adapters.outbound.aws_errors import describe_error
 
 _correlation_id: ContextVar[str | None] = ContextVar("correlation_id", default=None)
 _subject: ContextVar[str | None] = ContextVar("subject", default=None)
+
+
+# Libraries whose DEBUG records carry request headers (temporary AWS credentials, signatures) or SQL
+# parameters: they never log below WARNING, whatever LOG_LEVEL says.
+QUIET_LIBRARY_LOGGERS = ("botocore", "boto3", "urllib3", "s3transfer", "psycopg")
+REDACTED = "[REDACTED]"
+_SENSITIVE = re.compile(
+    r"(?i)(x-amz-security-token|authorization|aws_session_token|aws_secret_access_key|"
+    r"secret_access_key|security_token|sessiontoken|secretaccesskey)([\"']?\s*[:=]\s*b?[\"']?)[^\"'\n]+"
+    r"|AWS4-HMAC-SHA256\s+Credential=[^\"'\n]+"
+)
+
+
+def redact(text: str) -> str:
+    """Replace credential-looking values (token or authorization headers) in a message."""
+    return _SENSITIVE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}" if m.group(1) else REDACTED, text
+    )
+
+
+class RedactingFilter(logging.Filter):
+    """Last line of defence: scrub credential-looking values from every record."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = redact(record.getMessage())
+        record.args = None
+        return True
 
 
 def set_request_context(correlation_id: str | None, subject: str | None = None) -> None:
@@ -74,6 +102,9 @@ class JsonFormatter(logging.Formatter):
 def configure_logging(service: str, environment: str, level: int | str = logging.INFO) -> None:
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(JsonFormatter(service, environment))
+    handler.addFilter(RedactingFilter())
     root = logging.getLogger()
     root.handlers[:] = [handler]
     root.setLevel(level)
+    for name in QUIET_LIBRARY_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
