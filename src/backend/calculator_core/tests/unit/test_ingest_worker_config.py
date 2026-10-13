@@ -69,3 +69,20 @@ def test_worker_runs_until_stopped_and_start_failure_exits_one(
 
     monkeypatch.setattr(ingest_worker, "build_ingest_worker", refuse)
     assert ingest_worker.run_ingest_worker(ENV) == 1
+
+
+def test_ingest_tuning_defaults_and_overrides() -> None:
+    default = load_ingest_settings(ENV)
+    tuned = load_ingest_settings(
+        {**ENV, "INGEST_BATCH_SIZE": "100", "ALERT_THROTTLE_SECONDS": "60"}
+    )
+
+    assert (default.batch_size, default.alert_throttle_seconds) == (500, 300)
+    assert default.database.pool_timeout_seconds == 3
+    assert (tuned.batch_size, tuned.alert_throttle_seconds) == (100, 60)
+
+
+@pytest.mark.parametrize("bad", ["0", "5001", "many"])
+def test_invalid_batch_size_stops_the_start(bad: str) -> None:
+    with pytest.raises(SettingsError, match="INGEST_BATCH_SIZE"):
+        load_ingest_settings({**ENV, "INGEST_BATCH_SIZE": bad})

@@ -7,12 +7,15 @@ executed.
 
 Commands:
 
-    deploy   --env dev [--allow-replacement TYPE ...] [--through UNIT | --only UNIT]
+    deploy   --env dev [--allow-replacement TYPE ...] [--through UNIT | --only UNIT] [--dry-run]
                                                         build and package SAM stacks, create, check and
                                                         execute change sets, print outputs and summary;
                                                         --through stops the list after that unit; --only
                                                         deploys that unit alone (the alarms stack, after the
-                                                        Helm step has created the load balancer)
+                                                        Helm step has created the load balancer);
+                                                        --dry-run creates and checks the change sets with the
+                                                        same guard but never executes them (the entry gate of
+                                                        prod); the change sets are deleted afterwards
     output   --env dev --unit cluster --key ClusterName print one stack output
     destroy  --env dev --mode plan|destroy              list, or uninstall the Helm releases through the build
                                                         project, wait for the load balancer, remove the SSM
@@ -355,11 +358,16 @@ def change_set_name(run_id: str, attempt: str, unit: str) -> str:
     return safe[:128]
 
 
-def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, allowed: frozenset[str]) -> None:
+def deploy_stack(
+    env: str, entry: dict[str, Any], run_id: str, attempt: str, allowed: frozenset[str], *, dry_run: bool = False
+) -> bool:
+    """Deploy one stack; returns True when the stack existed (an update). With dry_run nothing is executed."""
     stack = entry["stack"]
     allowed = allowed | frozenset(entry.get("allowReplacement", []))  # per unit, e.g. the stateless bastion
     print(f"::group::{stack}")
     status = stack_status(stack)
+    if status == "ROLLBACK_COMPLETE" and dry_run:
+        raise DeployError(f"stack {stack} is in ROLLBACK_COMPLETE: the deployment would delete and create it again")
     if status == "ROLLBACK_COMPLETE":
         # A failed CREATE: the stack holds no resources and can only be deleted before it is created again.
         print(f"{stack} is in ROLLBACK_COMPLETE (a failed create). Events that failed first:")
@@ -373,6 +381,7 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
     ):
         raise DeployError(f"stack {stack} is in {status}: investigate it (read-only) before deploying again")
     change_set_type = "CREATE" if status in (None, "REVIEW_IN_PROGRESS") else "UPDATE"
+    existed = change_set_type == "UPDATE"
     template = prepare_template(env, entry)
     parameters = stack_parameters(env, REPO_ROOT / entry["template"])
     tags = [{"Key": k, "Value": v} for k, v in load_parameters(env)["Tags"].items()]
@@ -405,7 +414,12 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
                 "CAPABILITY_AUTO_EXPAND",
             ]
         )
-    page = wait_change_set(stack, name)
+    try:
+        page = wait_change_set(stack, name)
+    except DeployError:
+        if dry_run:
+            discard_dry_run_change_set(stack, name, existed)
+        raise
     if page is None:
         print(f"{stack}: no changes")
     else:
@@ -419,10 +433,21 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
         if violations:
             for violation in violations:
                 print(f"::error::Change set guard: {stack}: {violation}")
+            if dry_run:
+                discard_dry_run_change_set(stack, name, existed)
+                raise DeployError(f"change set guard refused {stack} (dry run; the change set was deleted)")
             raise DeployError(f"change set guard refused {stack}; the change set {name} was left for review")
+        if dry_run:
+            discard_dry_run_change_set(stack, name, existed)
+            print(f"{stack}: dry run, {len(page['Changes'])} changes pass the guard (nothing executed)")
+            print("::endgroup::")
+            return existed
         run(["aws", "cloudformation", "execute-change-set", "--stack-name", stack, "--change-set-name", name])
         wait_stack(stack, ("CREATE_COMPLETE", "UPDATE_COMPLETE"))
         print(f"{stack}: {change_set_type.lower()} complete")
+    if dry_run:
+        print("::endgroup::")
+        return existed
     if env == "prod":
         run(
             [
@@ -437,6 +462,14 @@ def deploy_stack(env: str, entry: dict[str, Any], run_id: str, attempt: str, all
     if entry["unit"] == "network":
         lock_default_security_group(env, stack)
     print("::endgroup::")
+    return existed
+
+
+def discard_dry_run_change_set(stack: str, name: str, existed: bool) -> None:
+    """Remove what a dry run created: the change set, and the empty REVIEW_IN_PROGRESS stack of a new stack."""
+    run(["aws", "cloudformation", "delete-change-set", "--stack-name", stack, "--change-set-name", name], check=False)
+    if not existed and stack_status(stack) == "REVIEW_IN_PROGRESS":
+        run(["aws", "cloudformation", "delete-stack", "--stack-name", stack], check=False)
 
 
 def lock_default_security_group(env: str, stack: str) -> None:
@@ -498,15 +531,32 @@ def command_deploy(args: argparse.Namespace) -> int:
     attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
     allowed = allowed_replacements(args.allow_replacement)
     outputs: dict[str, dict[str, str]] = {}
+    pending_create = False  # dry run: an earlier stack does not exist, so later ones cannot be fully evaluated
     for entry in limit_stacks(load_stacks(args.env), args.through, args.only):
         if not unit_enabled(entry, config):
             print(f"{entry['stack']}: skipped ({entry['onlyIf']['parameter']} is not {entry['onlyIf']['equals']})")
+            continue
+        if args.dry_run:
+            try:
+                existed = deploy_stack(args.env, entry, run_id, attempt, allowed, dry_run=True)
+            except DeployError as exc:
+                if not pending_create or "change set guard refused" in str(exc):
+                    raise
+                print(
+                    f"::warning::{entry['stack']}: not evaluated in the dry run, it depends on a stack to create: {exc}"
+                )
+                continue
+            pending_create = pending_create or not existed
             continue
         deploy_stack(args.env, entry, run_id, attempt, allowed)
         outputs[entry["stack"]] = stack_outputs(entry["stack"])
         if entry["unit"] == "scheduler" and args.env == "dev":
             # Also after a change set without changes: without this, egress is missing until the next 08:00.
             nat_up(entry["stack"])
+    if args.dry_run:
+        print("Dry run finished: every evaluated change set passed the guard. Nothing was executed.")
+        write_step_summary([f"### Dry run of {args.env}", "", "Every evaluated change set passed the guard."])
+        return 0
     summary = summary_lines(args.env, outputs)
     print("\n".join(summary))
     write_step_summary(summary)
@@ -1009,6 +1059,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="UNIT",
         default=None,
         help="deploy only this unit of stacks.json (not together with --through)",
+    )
+    deploy.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="create and check the change sets with the guard but never execute them (they are deleted afterwards)",
     )
     deploy.set_defaults(handler=command_deploy)
     destroy = sub.add_parser("destroy")

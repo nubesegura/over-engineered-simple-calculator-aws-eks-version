@@ -339,7 +339,8 @@ class _ContractMiddleware:
         except Exception as error:
             if response_started:
                 raise
-            await self._error_response(error, request_id, scope)(scope, receive, send)
+            response = await self._error_response(error, request_id, scope)
+            await response(scope, receive, send)
 
     def _preflight(self) -> Response:
         return Response(
@@ -351,7 +352,7 @@ class _ContractMiddleware:
             },
         )
 
-    def _error_response(self, error: Exception, request_id: str, scope: Scope) -> Response:
+    async def _error_response(self, error: Exception, request_id: str, scope: Scope) -> Response:
         if isinstance(error, InvalidInputError):
             logger.warning(
                 "Request rejected: code=%s reason=%s request_id=%s received=%r",
@@ -367,10 +368,10 @@ class _ContractMiddleware:
             scope["path"],
             request_id,
         )
-        self._notify(error, request_id)
+        await self._notify(error, request_id)
         return internal_error_response(request_id)
 
-    def _notify(self, error: Exception, request_id: str) -> None:
+    async def _notify(self, error: Exception, request_id: str) -> None:
         # Only our own messages are forwarded: driver and SDK messages may carry sensitive values.
         message = str(error) if isinstance(error, CalculatorError) else "Unexpected error."
         report = InternalErrorReport(
@@ -381,6 +382,9 @@ class _ContractMiddleware:
             correlation_id=request_id,
         )
         try:
-            self._notifier.notify(report)
-        except Exception:
-            logger.exception("The error notification failed")
+            # In a thread: the publish is blocking I/O and must not stall the event loop that
+            # also serves /health.
+            await run_in_threadpool(self._notifier.notify, report)
+        except Exception as failure:
+            # Type only: the message of a client library may carry request details.
+            logger.error("The error notification failed (%s).", type(failure).__name__)

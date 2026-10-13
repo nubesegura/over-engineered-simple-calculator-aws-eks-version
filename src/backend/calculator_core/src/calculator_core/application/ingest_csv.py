@@ -2,12 +2,15 @@
 
 Business outcomes (valid file, rejected file, invalid rows) are returned or reported; only an
 infrastructure failure raises, so the caller leaves the queue message for a retry. Saving is
-idempotent (the id derives from the row content), hence a retry never duplicates a row.
+idempotent (the id derives from the row content), hence a retry never duplicates a row. Valid
+rows are saved in batches, one transaction per batch: a failure in a later batch leaves the file
+in `incoming/` and the retry skips the rows that were already stored.
 """
 
 import csv
 import io
 import re
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -19,7 +22,7 @@ from calculator_core.application.ports.error_notifier import ErrorNotifier, Inte
 from calculator_core.application.ports.object_store import ObjectStore
 from calculator_core.domain.calculation import Calculation
 from calculator_core.domain.errors import DomainError
-from calculator_core.domain.operation import Operation
+from calculator_core.domain.operation import Operation, validate_operand
 
 INCOMING_PREFIX = "incoming/"
 PROCESSED_PREFIX = "processed/"
@@ -28,6 +31,7 @@ REPORTS_PREFIX = "reports/"
 MAX_FILE_BYTES = 5 * 1024 * 1024
 HEADER = ["operation", "operand_a", "operand_b", "occurred_at"]
 MAX_REPORTED_PROBLEMS = 1000
+DEFAULT_BATCH_SIZE = 500
 # One file name, no directory part; a ".." inside the name is rejected separately.
 _KEY_PATTERN = re.compile(r"incoming/[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.csv")
 _ID_NAMESPACE = uuid5(NAMESPACE_URL, "urn:calculator:ingest-row")
@@ -70,12 +74,14 @@ class IngestCsv:
         notifier: ErrorNotifier,
         service: str,
         environment: str,
+        batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._store = store
         self._repository = repository
         self._notifier = notifier
         self._service = service
         self._environment = environment
+        self._batch_size = batch_size
 
     def execute(self, key: str) -> IngestResult:
         if not is_valid_key(key):
@@ -90,7 +96,9 @@ class IngestCsv:
             rows, problems = _parse(raw)
         except _RejectedFileError as error:
             return self._reject(key, str(error))
-        created = sum(1 for row in rows if self._repository.save(row))
+        created = sum(
+            self._repository.save_many(batch) for batch in _batches(rows, self._batch_size)
+        )
         if problems:
             self._store.put(_report_key(key), _report_text(problems))
         self._store.move(key, PROCESSED_PREFIX + key.removeprefix(INCOMING_PREFIX))
@@ -106,6 +114,11 @@ class IngestCsv:
         self._notifier.notify(
             InternalErrorReport(self._service, self._environment, error_type, message, None)
         )
+
+
+def _batches(rows: Sequence[Calculation], size: int) -> Iterator[Sequence[Calculation]]:
+    for start in range(0, len(rows), size):
+        yield rows[start : start + size]
 
 
 def _report_key(key: str) -> str:
@@ -137,7 +150,7 @@ def _parse(raw: bytes) -> tuple[list[Calculation], list[str]]:
                 continue
             try:
                 calculation = _to_calculation(fields)
-            except (DomainError, ValueError) as error:
+            except (DomainError, ValueError, ArithmeticError) as error:
                 problems.append(f"line {reader.line_num}: {error}")
             else:
                 rows.setdefault(calculation.id, calculation)
@@ -155,6 +168,9 @@ def _to_calculation(fields: list[str]) -> Calculation:
     except ValueError:
         raise ValueError("unknown operation") from None
     a, b = _decimal(text_a, "operand_a"), _decimal(text_b, "operand_b")
+    # Before row_id: normalize() signals on sNaN and on exponents beyond the context limits.
+    validate_operand(a)
+    validate_operand(b)
     occurred_at = _utc_timestamp(text_at)
     return Calculation(
         id=row_id(operation, a, b, occurred_at),

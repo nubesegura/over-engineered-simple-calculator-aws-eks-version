@@ -1,11 +1,69 @@
 {{- /*
-D8: default deny in the namespace, then only what the design lists. Enforced by the VPC CNI network policy agent.
-The load balancer in IP mode connects from addresses of its own network interfaces in the VPC, which no pod or
-namespace selector can name, so the source is the VPC CIDR (ipBlock) on the pod port; the security groups (only
-the load balancer group reaches the pod port) narrow it further outside the cluster.
+D8: default deny in the namespace, then one policy per workload (add, sub, mul, div, history, ingest and the migrate
+job) with exactly the ingress and egress that workload needs; no rule is shared between kinds of pods. Enforced by
+the VPC CNI network policy agent.
+Ingress: only the HTTP workloads, only from the subnets of the load balancer nodes (network.albCidrs) on the pod
+port. The load balancer in IP mode connects from addresses of its own network interfaces, which no pod or namespace
+selector can name, so the source is an ipBlock; it is NOT the VPC range, because pod addresses are VPC addresses and
+any pod could then call the API and skip the JWT validation of the load balancer. The worker and the job have no ingress.
+Egress (each workload lists what it uses in `egress`): dns (CoreDNS), database (port 5432 to the private subnets that
+hold the proxy and the instance), aws (HTTPS to the AWS APIs through the NAT gateway and the S3 gateway endpoint,
+never to the VPC range) and podIdentity (credentials agent of the node). Probes of the kubelet come from the node
+itself and are not filtered by the agent.
 */}}
+{{- define "calc.egressRules" -}}
+{{- $root := .root -}}
+{{- range $rule := .egress }}
+{{- if eq $rule "dns" }}
+- to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+  ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+{{- else if eq $rule "database" }}
+- to:
+    {{- range $root.Values.network.databaseCidrs }}
+    - ipBlock:
+        cidr: {{ . }}
+    {{- end }}
+  ports:
+    - protocol: TCP
+      port: {{ $root.Values.network.databasePort }}
+{{- else if eq $rule "aws" }}
+- to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+          - {{ $root.Values.network.vpcCidr }}
+  ports:
+    - protocol: TCP
+      port: 443
+{{- else if eq $rule "podIdentity" }}
+- to:
+    - ipBlock:
+        cidr: {{ printf "%s/32" $root.Values.network.podIdentityAgentIp }}
+  ports:
+    - protocol: TCP
+      port: 80
+{{- else }}
+{{- fail (printf "unknown egress rule %q (use dns, database, aws, podIdentity)" $rule) }}
+{{- end }}
+{{- end }}
+{{- end -}}
 {{- $ns := include "calc.namespace" . }}
-{{- $cidr := required "network.vpcCidr is required" .Values.network.vpcCidr }}
+{{- $_ := required "network.vpcCidr is required" .Values.network.vpcCidr }}
+{{- $albCidrs := required "network.albCidrs is required (CIDRs of the public subnets where the load balancer nodes live)" .Values.network.albCidrs }}
+{{- $_ := required "network.databaseCidrs is required (CIDRs of the private subnets of the proxy and the instance)" .Values.network.databaseCidrs }}
+{{- $targets := dict }}
+{{- range $name, $w := .Values.workloads }}{{- $_ := set $targets $name (dict "kind" $w.kind "egress" $w.egress) }}{{- end }}
+{{- if .Values.migrate.enabled }}{{- $_ := set $targets "migrate" (dict "kind" "job" "egress" .Values.migrate.egress) }}{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -18,106 +76,35 @@ spec:
   policyTypes:
     - Ingress
     - Egress
+{{- range $name := keys $targets | sortAlpha }}
+{{- $t := get $targets $name }}
+{{- $egress := required (printf "workload %s needs a non-empty egress list" $name) $t.egress }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
-  name: allow-alb-to-api
+  name: {{ $name }}-network
   namespace: {{ $ns }}
   labels:
-    {{- include "calc.labels" (dict "root" . "name" "allow-alb-to-api" "component" "policy") | nindent 4 }}
+    {{- include "calc.labels" (dict "root" $ "name" (printf "%s-network" $name) "component" "policy") | nindent 4 }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/component: api
+      {{- include "calc.selectorLabels" (dict "root" $ "name" $name) | nindent 6 }}
   policyTypes:
     - Ingress
+    - Egress
+  {{- if eq $t.kind "http" }}
   ingress:
     - from:
+        {{- range $albCidrs }}
         - ipBlock:
-            cidr: {{ $cidr }}
+            cidr: {{ . }}
+        {{- end }}
       ports:
         - protocol: TCP
-          port: {{ .Values.service.port }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-dns-egress
-  namespace: {{ $ns }}
-  labels:
-    {{- include "calc.labels" (dict "root" . "name" "allow-dns-egress" "component" "policy") | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
+          port: {{ $.Values.service.port }}
+  {{- end }}
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-database-egress
-  namespace: {{ $ns }}
-  labels:
-    {{- include "calc.labels" (dict "root" . "name" "allow-database-egress" "component" "policy") | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - ipBlock:
-            cidr: {{ $cidr }}
-      ports:
-        - protocol: TCP
-          port: {{ .Values.network.databasePort }}
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-https-egress
-  namespace: {{ $ns }}
-  labels:
-    {{- include "calc.labels" (dict "root" . "name" "allow-https-egress" "component" "policy") | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
-        - protocol: TCP
-          port: 443
----
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-pod-identity-egress
-  namespace: {{ $ns }}
-  labels:
-    {{- include "calc.labels" (dict "root" . "name" "allow-pod-identity-egress" "component" "policy") | nindent 4 }}
-spec:
-  podSelector: {}
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - ipBlock:
-            cidr: {{ printf "%s/32" .Values.network.podIdentityAgentIp }}
-      ports:
-        - protocol: TCP
-          port: 80
+    {{- include "calc.egressRules" (dict "root" $ "egress" $egress) | nindent 4 }}
+{{- end }}

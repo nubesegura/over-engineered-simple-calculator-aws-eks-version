@@ -1,0 +1,52 @@
+name: Deploy PROD
+
+# Production path (QG-001). It runs when the owner merges develop into main (push to main), or by hand from main.
+# Nothing here runs on develop or on a pull request.
+#
+# Gate order: ci -> plan (dry run: change sets with the removal/replacement guard, cluster version check, nothing
+# executed) -> apply. The apply job needs the plan job, so a failed plan (or a missing GitHub environment
+# configuration, which the reusable workflow checks before it touches AWS) stops everything. No approvers exist
+# (single-user organisation): the dry run and the guard are the safety.
+# There is no prod destroy workflow on purpose: destroying prod is a manual action with typed confirmation.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # allowed from main only (each job checks the ref, and so does the reusable workflow)
+
+permissions:
+  id-token: write
+  contents: read
+
+# Never run two production deployments at once, and never cancel one that is running.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/ci.yml
+
+  plan:
+    needs: ci
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      dry_run: true
+    secrets:
+      ROLE_ARN: ${{ secrets.ROLE_ARN }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}
+
+  apply:
+    needs: plan
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: prod
+      dry_run: false
+    secrets:
+      ROLE_ARN: ${{ secrets.ROLE_ARN }}
+      AWS_ACCOUNT_ID: ${{ secrets.AWS_ACCOUNT_ID }}
+      SUPPORT_EMAIL: ${{ secrets.SUPPORT_EMAIL }}

@@ -3,6 +3,7 @@ skipped with a clear message when helm is not on PATH."""
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
 from typing import Any
@@ -13,6 +14,7 @@ from chart_support import (
     DIGEST,
     HELM_MISSING,
     POOL_ID,
+    REPO,
     REPOSITORY,
     WAF_ARN,
     Doc,
@@ -33,14 +35,7 @@ WORKER = "ingest"
 ROUTES = {name: [f"/api/v1/{name}", f"/api/eks/v1/{name}"] for name in HTTP}
 ANN = "alb.ingress.kubernetes.io/"
 TAG_KEYS = ["team-owner", "project-name", "app-name", "repo-name", "env-type"]
-POLICIES = {
-    "default-deny-all",
-    "allow-alb-to-api",
-    "allow-dns-egress",
-    "allow-database-egress",
-    "allow-https-egress",
-    "allow-pod-identity-egress",
-}
+POLICIES = {"default-deny-all", *(f"{name}-network" for name in [*HTTP, WORKER, "migrate"])}
 
 
 @pytest.fixture(scope="module", params=ENVS)
@@ -249,32 +244,120 @@ def test_migrate_job_name_follows_the_run_id(env: str) -> None:
     assert of_kind(render(env, {"migrate.enabled": False}), "Job") == []
 
 
-def test_network_policy_set(docs: list[Doc]) -> None:
-    policies = {p["metadata"]["name"]: p for p in of_kind(docs, "NetworkPolicy")}
+def policy_map(docs: list[Doc]) -> dict[str, Doc]:
+    return {p["metadata"]["name"]: p["spec"] for p in of_kind(docs, "NetworkPolicy")}
+
+
+def cidrs_of(rule: Doc, key: str) -> list[str]:
+    return [peer["ipBlock"]["cidr"] for peer in rule[key]]
+
+
+def vpc_cidr(env: str) -> str:
+    parameters = json.loads((REPO / "parameters" / f"{env}.json").read_text(encoding="utf-8"))
+    return str(parameters["Parameters"]["VpcCidr"])
+
+
+def parameter_slices(env: str, indexes: tuple[int, ...]) -> list[str]:
+    """Fn::Cidr [VpcCidr, 13, 8] of templates/network.yaml: the /24 slices of the VPC range."""
+    subnets = list(ipaddress.ip_network(vpc_cidr(env)).subnets(new_prefix=24))
+    return [str(subnets[i]) for i in indexes]
+
+
+def test_default_deny_and_one_policy_per_workload(docs: list[Doc]) -> None:
+    policies = policy_map(docs)
     assert set(policies) == POLICIES
-    deny = policies["default-deny-all"]["spec"]
+    deny = policies["default-deny-all"]
     assert deny["podSelector"] == {} and deny["policyTypes"] == ["Ingress", "Egress"]
     assert "ingress" not in deny and "egress" not in deny
+    for name in [*HTTP, WORKER, "migrate"]:  # each policy selects exactly one workload and filters both directions
+        spec = policies[f"{name}-network"]
+        assert spec["podSelector"]["matchLabels"]["app.kubernetes.io/name"] == name
+        assert spec["policyTypes"] == ["Ingress", "Egress"]
+    # every pod template carries the labels its policy selects
+    selected = {name: policies[f"{name}-network"]["podSelector"]["matchLabels"] for name in [*HTTP, WORKER]}
+    for deployment in of_kind(docs, "Deployment"):
+        labels = deployment["spec"]["template"]["metadata"]["labels"]
+        name = deployment["metadata"]["name"]
+        assert selected[name].items() <= labels.items()
+    job_labels = of_kind(docs, "Job")[0]["spec"]["template"]["metadata"]["labels"]
+    assert policies["migrate-network"]["podSelector"]["matchLabels"].items() <= job_labels.items()
 
-    alb = policies["allow-alb-to-api"]["spec"]
-    assert alb["podSelector"]["matchLabels"] == {"app.kubernetes.io/component": "api"}
-    assert alb["ingress"][0]["from"][0]["ipBlock"]["cidr"].startswith("10.3")
-    assert alb["ingress"][0]["ports"] == [{"protocol": "TCP", "port": 8443}]
 
-    dns = policies["allow-dns-egress"]["spec"]["egress"][0]
-    assert dns["to"][0]["podSelector"]["matchLabels"] == {"k8s-app": "kube-dns"}
-    assert {(p["protocol"], p["port"]) for p in dns["ports"]} == {("UDP", 53), ("TCP", 53)}
+@pytest.mark.parametrize("name", HTTP)
+def test_http_workload_ingress_is_only_the_load_balancer_subnets_on_the_pod_port(
+    env: str, docs: list[Doc], name: str
+) -> None:
+    ingress = policy_map(docs)[f"{name}-network"]["ingress"]
+    assert len(ingress) == 1
+    assert ingress[0]["ports"] == [{"protocol": "TCP", "port": 8443}]
+    assert [peer.keys() for peer in ingress[0]["from"]] == [{"ipBlock"}] * 2  # no pod, namespace or other selector
+    assert cidrs_of(ingress[0], "from") == parameter_slices(env, (1, 2))
+    assert all("except" not in peer["ipBlock"] for peer in ingress[0]["from"])
 
-    database = policies["allow-database-egress"]["spec"]["egress"][0]
-    assert database["ports"] == [{"protocol": "TCP", "port": 5432}]
-    assert database["to"][0]["ipBlock"]["cidr"] == alb["ingress"][0]["from"][0]["ipBlock"]["cidr"]
 
-    https = policies["allow-https-egress"]["spec"]["egress"][0]
-    assert https["ports"] == [{"protocol": "TCP", "port": 443}] and https["to"][0]["ipBlock"]["cidr"] == "0.0.0.0/0"
+@pytest.mark.parametrize("name", [WORKER, "migrate"])
+def test_worker_and_job_accept_no_traffic(docs: list[Doc], name: str) -> None:
+    spec = policy_map(docs)[f"{name}-network"]
+    assert "Ingress" in spec["policyTypes"] and "ingress" not in spec
 
-    identity = policies["allow-pod-identity-egress"]["spec"]["egress"][0]
-    assert identity["to"][0]["ipBlock"]["cidr"] == "169.254.170.23/32"
-    assert identity["ports"] == [{"protocol": "TCP", "port": 80}]
+
+def test_no_policy_admits_the_pod_subnets_or_the_whole_vpc_to_the_api_pods(env: str, docs: list[Doc]) -> None:
+    vpc = ipaddress.ip_network(vpc_cidr(env))
+    private = [ipaddress.ip_network(c) for c in parameter_slices(env, (11, 12))]  # nodes and pods live here
+    public = {ipaddress.ip_network(c) for c in parameter_slices(env, (1, 2))}
+    reaching_api = 0
+    for doc in of_kind(docs, "NetworkPolicy"):
+        spec = doc["spec"]
+        selector = spec["podSelector"].get("matchLabels", {})
+        # policies add up: count every policy that selects all pods or any API pod, whatever its name
+        if selector and selector.get("app.kubernetes.io/name") not in HTTP:
+            continue
+        for rule in spec.get("ingress", []):
+            reaching_api += 1
+            assert rule.get("ports"), f"{doc['metadata']['name']}: ingress with no port restriction"
+            for peer in rule["from"]:
+                assert set(peer) == {"ipBlock"}, f"{doc['metadata']['name']}: source other than an ipBlock"
+                source = ipaddress.ip_network(peer["ipBlock"]["cidr"])
+                assert source in public, f"{doc['metadata']['name']}: {source} is not a load balancer subnet"
+                assert source != vpc and not any(source.overlaps(p) for p in private)
+    assert reaching_api == len(HTTP)
+
+
+COREDNS_PEER = [
+    {
+        "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kube-system"}},
+        "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+    }
+]
+
+
+@pytest.mark.parametrize("name", [*HTTP, WORKER, "migrate"])
+def test_each_workload_egress_is_dns_database_aws_and_pod_identity_only(env: str, docs: list[Doc], name: str) -> None:
+    egress = policy_map(docs)[f"{name}-network"]["egress"]
+    assert len(egress) == 4
+    by_port = {tuple((p["protocol"], p["port"]) for p in rule["ports"]): rule for rule in egress}
+    assert set(by_port) == {(("UDP", 53), ("TCP", 53)), (("TCP", 5432),), (("TCP", 443),), (("TCP", 80),)}
+    dns = by_port[(("UDP", 53), ("TCP", 53))]
+    assert dns["to"] == COREDNS_PEER  # CoreDNS pods only, not the whole namespace
+    database = by_port[(("TCP", 5432),)]
+    assert cidrs_of(database, "to") == parameter_slices(env, (11, 12))  # private subnets, not the whole VPC
+    aws = by_port[(("TCP", 443),)]["to"]
+    assert aws == [{"ipBlock": {"cidr": "0.0.0.0/0", "except": [vpc_cidr(env)]}}]  # the AWS APIs, never another pod
+    identity = by_port[(("TCP", 80),)]["to"]
+    assert identity == [{"ipBlock": {"cidr": "169.254.170.23/32"}}]
+
+
+def test_egress_rules_cannot_be_unknown_or_missing() -> None:
+    unknown = run_helm("template", [*helm_args("dev"), "--set", "workloads.add.egress[0]=anything"])
+    assert unknown.returncode != 0 and "unknown egress rule" in unknown.stderr
+    empty = run_helm("template", [*helm_args("dev"), "--set", "workloads.add.egress=null"])
+    assert empty.returncode != 0 and "add needs a non-empty egress list" in empty.stderr
+
+
+@pytest.mark.parametrize("key", ["network.albCidrs", "network.databaseCidrs"])
+def test_missing_subnet_cidrs_stop_the_render(key: str) -> None:
+    result = run_helm("template", [*helm_args("prod"), "--set", f"{key}=null"])
+    assert result.returncode != 0 and key in result.stderr
 
 
 def test_no_secret_hostpath_or_privileged_anywhere(docs: list[Doc]) -> None:

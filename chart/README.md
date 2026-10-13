@@ -42,9 +42,11 @@ Prod also needs `ingress.wafAclArn` (the render stops without it). Tests: `pytho
 - **Limitations.** `jwt-validation` works on HTTPS listeners only; a rejected token gets the ALB 401 which cannot be
   customised (gap G5). Each Ingress gets its own target group per service (10 target groups, 20 listener rules).
   Any user who can create Ingress objects with the same `group.name` can add rules to the ALB: restrict RBAC.
-- **Network policy.** The ALB (IP mode) connects from the addresses of its network interfaces in the VPC, which no
-  pod or namespace selector can name: ingress to the API pods is allowed from the VPC CIDR (`ipBlock`) on 8443; the
-  security groups (only the load balancer group reaches the pod port) narrow it. `allow-pod-identity-egress`
-  (169.254.170.23:80) is needed so that pods can obtain their pod identity credentials.
+- **Network policy.** Default deny plus one policy per workload (`add`, `sub`, `mul`, `div`, `history`, `ingest`, `migrate`).
+  The ALB (IP mode) connects from the addresses of its network interfaces, which no pod selector can name: the API pods
+  accept ingress on 8443 only from the subnets of the load balancer (`network.albCidrs`), never from the whole VPC or the
+  pod subnets, so a compromised pod cannot skip the JWT validation of the ALB. `ingest` and `migrate` accept no ingress.
+  Each policy lists its own egress (DNS to CoreDNS, the database subnets on 5432, HTTPS to AWS APIs, and the pod identity
+  agent 169.254.170.23:80, which pods need to obtain their credentials).
 - **Environment and logging.** Every pod and the migrate job get `ENVIRONMENT` (= `envType`) and `LOG_LEVEL` (= `app.logLevel`, `INFO` in dev and prod). DEBUG only as an explicit, temporary override (`--set-string app.logLevel=DEBUG`); the application keeps `botocore`, `boto3`, `urllib3`, `s3transfer` and `psycopg` at WARNING even then.
 - **Database trust file.** `app.sslRootCert` (`/app/db-trust-bundle.pem`) holds the RDS global bundle plus the Amazon Root CA 1 to 4: RDS Proxy presents an ACM certificate, which does not chain to the RDS CAs.

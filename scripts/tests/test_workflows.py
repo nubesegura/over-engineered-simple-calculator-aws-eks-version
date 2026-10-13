@@ -56,8 +56,8 @@ def test_deploy_dev_is_manual_only_and_serialised() -> None:
     assert set(deploy["secrets"]) == {"ROLE_ARN", "AWS_ACCOUNT_ID", "SUPPORT_EMAIL"}
 
 
-def test_no_prod_deploy_workflow_yet() -> None:
-    assert not (WORKFLOWS / "deploy-prod.yml").exists()
+def test_there_is_no_prod_destroy_workflow() -> None:
+    assert not list(WORKFLOWS.glob("destroy-prod*"))  # destroying prod stays manual, with typed confirmation
 
 
 def test_deploy_is_reusable_with_least_privilege() -> None:
@@ -67,11 +67,11 @@ def test_deploy_is_reusable_with_least_privilege() -> None:
     assert workflow["permissions"] == {"id-token": "write", "contents": "read"}
 
 
-def test_deploy_refuses_prod_before_anything_else() -> None:
+def test_deploy_refuses_other_environments_and_prod_outside_main_before_anything_else() -> None:
     first = steps(load("deploy.yml"))[0]
-    assert '!= "dev"' in first["run"]
-    assert "exit 1" in first["run"]
-    assert first["env"]["TARGET"] == "${{ inputs.environment }}"
+    assert first["env"] == {"TARGET": "${{ inputs.environment }}", "REF": "${{ github.ref }}"}
+    assert '"$REF" != "refs/heads/main"' in first["run"] and "exit 1" in first["run"]
+    assert "dev) ;;" in first["run"] and "use dev or prod" in first["run"]
 
 
 def test_deploy_runs_the_guards_in_order_and_builds_after_the_stacks() -> None:
@@ -80,13 +80,13 @@ def test_deploy_runs_the_guards_in_order_and_builds_after_the_stacks() -> None:
     joined = "\n".join(runs)
     order = [
         "aws sts get-caller-identity",
-        "iac_owner_guard.py check --tool cloudformation --env dev",
+        'iac_owner_guard.py check --tool cloudformation --env "$ENVIRONMENT"',
         "package_rotation.py",
-        "cfn_deploy.py deploy --env dev --through storage",
-        "run_deploy_build.py run --env dev --command addons",
-        "run_deploy_build.py run --env dev --command deploy",
+        'cfn_deploy.py deploy --env "$ENVIRONMENT" --through storage\n',
+        'run_deploy_build.py run --env "$ENVIRONMENT" --command addons',
+        'run_deploy_build.py run --env "$ENVIRONMENT" --command deploy',
         "discover_targets.py --cluster-name",
-        "cfn_deploy.py deploy --env dev --only",
+        'cfn_deploy.py deploy --env "$ENVIRONMENT" --only',
     ]
     positions = [joined.index(item) for item in order]
     assert positions == sorted(positions)
@@ -116,7 +116,7 @@ def test_secrets_never_appear_in_run_scripts(name: str) -> None:
 
 def test_secrets_are_not_printed() -> None:
     secret_variables = {"EXPECTED_ACCOUNT", "CFN_PARAM_SupportEmail", "ROLE_ARN", "SUPPORT_EMAIL"}
-    for name in ("deploy.yml", "deploy-dev.yml"):
+    for name in ("deploy.yml", "deploy-dev.yml", "deploy-prod.yml"):
         for step in steps(load(name)):
             for line in step.get("run", "").splitlines():
                 if re.match(r"\s*(echo|printf|cat)\b", line):
@@ -273,7 +273,8 @@ def test_release_is_deployed_by_digest_with_allow_listed_overrides() -> None:
         assert f"--pass {name}" in run
     assert step["env"]["RUN_ID"] == "r${{ github.run_id }}"
     assert step["env"]["COGNITO_USER_POOL_ID"] == "${{ vars.COGNITO_USER_POOL_ID }}"
-    assert step["env"]["WAF_ACL_ARN"] == "" and "ACCESS_LOG_BUCKET" not in step["env"]
+    assert step["env"]["WAF_ACL_ARN"] == "${{ inputs.environment == 'prod' && vars.WAF_ACL_ARN || '' }}"
+    assert "ACCESS_LOG_BUCKET" not in step["env"]
     # the three storage values are read from the stack outputs and masked before they are passed on
     for key, variable in (
         ("IngestQueueUrl", "INGEST_QUEUE_URL"),
@@ -287,7 +288,7 @@ def test_release_is_deployed_by_digest_with_allow_listed_overrides() -> None:
 def test_configuration_check_fails_early_on_empty_cognito_variables_and_web_origin() -> None:
     step = next(s for s in steps(load("deploy.yml")) if s.get("name") == "Validate environment configuration")
     assert "COGNITO_USER_POOL_ID" in step["env"] and "COGNITO_APP_CLIENT_ID" in step["env"]
-    assert ".Parameters.WebOrigin" in step["run"] and "parameters/dev.json" in step["run"]
+    assert ".Parameters.WebOrigin" in step["run"] and "parameters/${ENVIRONMENT}.json" in step["run"]
     assert "WebOrigin is empty" in step["run"]
 
 
@@ -308,12 +309,12 @@ def test_alarms_are_deployed_alone_after_the_release_with_the_discovered_dimensi
     by_name = {step.get("name"): step for step in steps(load("deploy.yml"))}
     discover = by_name["Discover the alarm dimensions and build the reminder"]["run"]
     assert 'discover_targets.py --cluster-name "$cluster" --enable-asg-metrics --github-env "$GITHUB_ENV"' in discover
-    assert 'reminder_message.py --env dev --cluster-name "$cluster" --github-env "$GITHUB_ENV"' in discover
+    assert 'reminder_message.py --env "$ENVIRONMENT" --cluster-name "$cluster" --github-env "$GITHUB_ENV"' in discover
     assert "--unit cluster --key ClusterName" in discover
     # the first deployment stops before the alarms (their dimensions do not exist yet); the second one is --only
     assert "--through storage" in by_name["Deploy the stacks (security through storage)"]["run"]
     alarms_run = by_name["Deploy the alarms stack"]["run"].strip()
-    assert alarms_run == 'python scripts/cfn_deploy.py deploy --env dev --only "$LAST_UNIT"'
+    assert alarms_run == 'python scripts/cfn_deploy.py deploy --env "$ENVIRONMENT" --only "$LAST_UNIT"'
 
 
 def test_destroy_runs_the_uninstall_flow_inside_the_single_destroy_step() -> None:
@@ -338,3 +339,91 @@ def test_destroy_ends_with_the_deregistration_notice_only_in_destroy_mode() -> N
     assert "API_WEIGHT_EKS" in step["run"] and "shared-resources" in step["run"]
     assert "GITHUB_STEP_SUMMARY" in step["run"]
     assert names.index("Destroy (CloudFormation)") < names.index("Closing notice for the owner")
+
+
+# --------------------------------------------------------------------------- production path (QG-001)
+INTERPOLATION = re.compile(r"\$\{\{")
+
+
+def test_deploy_prod_runs_only_on_push_to_main_or_manually_and_is_serialised() -> None:
+    workflow = load("deploy-prod.yml")
+    on = triggers(workflow)
+    assert set(on) == {"push", "workflow_dispatch"}
+    assert on["push"] == {"branches": ["main"]}  # a pull request, develop or a tag never deploys prod
+    assert workflow["concurrency"] == {"group": "deploy-prod", "cancel-in-progress": False}
+    assert workflow["permissions"] == {"id-token": "write", "contents": "read"}
+
+
+def test_deploy_prod_gate_order_ci_then_dry_run_then_apply() -> None:
+    jobs = load("deploy-prod.yml")["jobs"]
+    assert set(jobs) == {"ci", "plan", "apply"}
+    assert jobs["plan"]["needs"] == "ci" and jobs["apply"]["needs"] == "plan"
+    for name in ("plan", "apply"):
+        assert jobs[name]["uses"] == "./.github/workflows/deploy.yml"
+        assert jobs[name]["with"]["environment"] == "prod"
+        assert set(jobs[name]["secrets"]) == {"ROLE_ARN", "AWS_ACCOUNT_ID", "SUPPORT_EMAIL"}  # never `inherit`
+    assert jobs["plan"]["with"]["dry_run"] is True and jobs["apply"]["with"]["dry_run"] is False
+    assert "ignore_nat_window" not in jobs["apply"]["with"]  # the NAT window does not apply to prod
+
+
+def test_every_prod_job_checks_that_the_ref_is_main() -> None:
+    for name, job in load("deploy-prod.yml")["jobs"].items():
+        assert job["if"] == "${{ github.ref == 'refs/heads/main' }}", name
+
+
+def test_dry_run_steps_run_before_and_apply_steps_are_skipped_in_a_dry_run() -> None:
+    workflow = load("deploy.yml")
+    call = triggers(workflow)["workflow_call"]["inputs"]["dry_run"]
+    assert call["type"] == "boolean" and call["default"] is False  # the default never plans only by accident
+    by_name = {step.get("name"): step for step in steps(workflow)}
+    dry = by_name["Dry run of the stacks, change sets without executing (plan only)"]
+    assert dry["if"] == "${{ inputs.dry_run }}"
+    assert dry["run"].endswith('deploy --env "$ENVIRONMENT" --through storage --dry-run')
+    version = by_name["Check the Kubernetes version (plan only)"]
+    assert version["run"] == 'python scripts/eks_latest_version.py --env "$ENVIRONMENT"'
+    names = [step.get("name") for step in steps(workflow)]
+    assert names.index("Owner guard (CloudFormation only)") < names.index(dry["name"])
+    assert names.index("Verify target AWS account") < names.index(dry["name"])
+    assert names.index("Validate environment configuration") < names.index("Configure AWS Credentials")
+    # everything after the dry run steps changes something and is skipped in a dry run
+    after = names[names.index("Deploy the stacks (security through storage)") :]
+    for name in after:
+        condition = by_name[name]["if"]
+        assert "!inputs.dry_run" in condition, name
+    # no other step may execute a change set or deploy
+    for step in steps(workflow):
+        if "--dry-run" in step.get("run", ""):
+            continue
+        if re.search(r"cfn_deploy.py deploy|run_deploy_build.py run|--push", step.get("run", "")):
+            assert "!inputs.dry_run" in step["if"], step["name"]
+
+
+def test_validation_fails_closed_for_prod_before_aws_is_touched() -> None:
+    workflow = load("deploy.yml")
+    step = next(s for s in steps(workflow) if s.get("name") == "Validate environment configuration")
+    assert "WAF_ACL_ARN_VAR" in step["env"] and '[ "$ENVIRONMENT" = "prod" ]' in step["run"]
+    for secret in ("ROLE_ARN", "AWS_ACCOUNT_ID", "SUPPORT_EMAIL"):
+        assert step["env"][f"{secret}_SET"] == "${{ secrets." + secret + " != '' }}"
+    assert "missing" in step["run"] and step["run"].rstrip().endswith('[ "$missing" -eq 0 ] || exit 1')
+    names = [s.get("name") for s in steps(workflow)]
+    assert names.index("Validate environment configuration") < names.index("Configure AWS Credentials")
+    assert load("deploy.yml")["jobs"]["deploy"]["env"] == {"ENVIRONMENT": "${{ inputs.environment }}"}
+
+
+@pytest.mark.parametrize("name", ALL)
+def test_no_expression_is_interpolated_into_run_scripts(name: str) -> None:
+    """Contexts reach scripts through env only (script injection); a ${{ }} inside run: is a defect."""
+    for step in steps(load(name)):
+        run = step.get("run", "")
+        assert not INTERPOLATION.search(run), f"{name}: expression in run of {step.get('name')}"
+
+
+def test_nothing_in_the_deploy_workflows_hard_codes_dev_in_a_command() -> None:
+    for step in steps(load("deploy.yml")):
+        assert not re.search(r"--env dev\b|parameters/dev\.json", step.get("run", "")), step.get("name")
+
+
+def test_prod_account_check_and_account_ids_stay_masked() -> None:
+    step = next(s for s in steps(load("deploy.yml")) if s.get("name") == "Verify target AWS account")
+    assert "$ENVIRONMENT GitHub environment" in step["run"]
+    assert "::add-mask::$ACTUAL_ACCOUNT" in step["run"]

@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from typing import Protocol
 
 from calculator_core.domain.calculation import Calculation
@@ -12,6 +13,13 @@ class CalculationRepository(Protocol):
         (the stored row is kept and nothing fails). A row is visible to the next
         `list_page` call as soon as `save` returns.
         Must raise `InfrastructureError` if the row was not persisted.
+        """
+
+    def save_many(self, calculations: Sequence[Calculation]) -> int:
+        """Persist a batch in ONE transaction, with the idempotency of `save`.
+
+        Returns how many rows were new. Either the whole batch is stored or the call raises
+        `InfrastructureError` and nothing of the batch is stored.
         """
 
     def list_page(self, limit: int, after: HistoryCursor | None) -> list[Calculation]:

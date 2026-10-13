@@ -6,10 +6,11 @@
 # The named context `rotation` lets the CA bundle stage reuse the validated download logic of
 # src/rotation/package_bundle.py instead of duplicating it.
 #
-# Base image: python:3.14-slim-trixie, multi-arch index pinned by digest (the digest the ecs
-# image resolved on 2026-10-05, built for linux/arm64 because the nodes are Graviton).
+# Base image: python:3.14-slim-trixie (Python 3.14.8, Debian 13), multi-arch index pinned by digest (the index
+# digest of 2026-10-13; the linux/arm64 image inside it is built for the Graviton nodes). It carries libc6
+# 2.41-12+deb13u4, libpcre2 10.46-1~deb13u3 and zlib1g 1.3.1-1+b1.
 # Refresh tag and digest together, never use `latest`.
-ARG PYTHON_IMAGE=python:3.14-slim-trixie@sha256:c3e521df8b2b498a7a682e7e18676771cb80c6b75b8699af886b2d554ce40151
+ARG PYTHON_IMAGE=python:3.14-slim-trixie@sha256:a2b82f3c48559aa0a8446d9af49826b6e2b2016f4cd2afabfe6013ec53729170
 
 # ---- build stage: runtime dependencies and the calculator_core package ----
 # hadolint ignore=DL3029

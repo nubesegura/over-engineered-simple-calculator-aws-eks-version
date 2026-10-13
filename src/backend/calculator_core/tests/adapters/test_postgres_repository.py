@@ -61,6 +61,22 @@ class RecordingConnection:
         self.fail = fail
         self.rowcount = 1
         self.statements: list[tuple[str, tuple[Any, ...]]] = []
+        self.batches: list[tuple[str, list[tuple[Any, ...]]]] = []
+
+    def cursor(self) -> RecordingConnection:
+        return self
+
+    def __enter__(self) -> RecordingConnection:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        return None
+
+    def executemany(self, query: str, rows: list[tuple[Any, ...]]) -> None:
+        if self.fail:
+            raise psycopg.OperationalError("connection lost")
+        self.batches.append((query, rows))
+        self.rowcount = len(rows)
 
     def execute(self, query: str, params: tuple[Any, ...]) -> RecordingConnection:
         if self.fail:
@@ -108,6 +124,25 @@ def test_driver_failures_become_infrastructure_errors() -> None:
         repository.save(_calculation(0, 1))
     with pytest.raises(InfrastructureError):
         repository.list_page(5, None)
+
+
+def test_a_batch_is_one_statement_execution_with_bound_values() -> None:
+    pool = RecordingPool()
+    repository = _repository(pool)
+
+    written = repository.save_many([_calculation(0, 1), _calculation(1, 2, correlation_id=HOSTILE)])
+
+    assert written == 2
+    ((query, rows),) = pool.connection_in_use.batches
+    assert "ON CONFLICT (calculation_id) DO NOTHING" in query
+    assert query.count("%s") == len(rows[0])
+    assert [row[0] for row in rows] == [UUID(int=1), UUID(int=2)]
+    assert HOSTILE not in query
+
+
+def test_a_batch_driver_failure_becomes_an_infrastructure_error() -> None:
+    with pytest.raises(InfrastructureError):
+        _repository(RecordingPool(fail=True)).save_many([_calculation(0, 1)])
 
 
 @pytest.fixture
@@ -177,3 +212,16 @@ def test_hostile_text_is_stored_as_data_and_the_table_survives(
     rows = repository.list_page(10, HistoryCursor(FIXED_NOW + timedelta(seconds=9), UUID(int=0)))
 
     assert {row.correlation_id for row in rows} == {HOSTILE, "corr"}
+
+
+@pytest.mark.postgres
+@needs_postgres
+def test_a_batch_counts_only_new_rows_and_a_repeat_creates_no_duplicates(
+    repository: PostgresCalculationRepository,
+) -> None:
+    rows = [_calculation(n, n + 1) for n in range(4)]
+
+    assert repository.save_many(rows[:3]) == 3
+    assert repository.save_many(rows) == 1
+    assert repository.save_many(rows) == 0
+    assert len(repository.list_page(10, None)) == 4

@@ -10,6 +10,8 @@ app:
 
 network:
   vpcCidr: 10.31.0.0/16   # parameters/prod.json VpcCidr
+  albCidrs: [10.31.1.0/24, 10.31.2.0/24]   # public subnets (VpcCidr slices 1, 2)
+  databaseCidrs: [10.31.11.0/24, 10.31.12.0/24]   # private subnets (slices 11, 12)
 
 resourceProfiles:
   calc:

@@ -949,3 +949,60 @@ def test_up_payload_has_no_force(repo: Path, cli: FakeCli) -> None:
     deploy.nat_up("stk-useast2-oecalc-eks-scheduler-dev")
     payload = cli.called("lambda invoke")[0]
     assert json.loads(payload[payload.index("--payload") + 1]) == {"action": "up", "wait": True}
+
+
+# --------------------------------------------------------------------------- dry run (entry gate of prod)
+def test_dry_run_checks_every_change_set_and_executes_nothing(repo: Path, cli: FakeCli) -> None:
+    world = World(cli, {"stk-useast2-oecalc-eks-security-prod": "CREATE_COMPLETE"})
+    assert deploy.main(["deploy", "--env", "prod", "--dry-run"]) == 0
+    assert len(cli.called("cloudformation create-change-set")) == 2
+    assert not cli.called("cloudformation execute-change-set")
+    assert not cli.called("cloudformation update-termination-protection")
+    assert not cli.called("ec2 ")  # the default security group is not touched
+    assert len(cli.called("cloudformation delete-change-set")) == 2
+    assert world.statuses == {"stk-useast2-oecalc-eks-security-prod": "CREATE_COMPLETE"}
+
+
+def test_dry_run_still_stops_on_a_removal_or_replacement(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = World(cli, {"stk-useast2-oecalc-eks-security-prod": "CREATE_COMPLETE"})
+    world.change_set = {"Status": "CREATE_COMPLETE", "Changes": [change("Modify", "AWS::RDS::DBInstance", "True")]}
+    assert deploy.main(["deploy", "--env", "prod", "--dry-run"]) == 1
+    assert "Replace (True) AWS::RDS::DBInstance" in capsys.readouterr().out
+    assert not cli.called("cloudformation execute-change-set")
+    assert cli.called("cloudformation delete-change-set")
+
+
+def test_dry_run_of_a_new_environment_leaves_no_empty_stacks_and_tolerates_dependent_failures(
+    repo: Path, cli: FakeCli, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = World(cli)
+    created: list[str] = []
+
+    def create(args: list[str]) -> Reply:
+        stack = world.stack_of(args)
+        created.append(stack)
+        world.statuses[stack] = "REVIEW_IN_PROGRESS"
+        if "network" in stack:
+            world.change_set = {"Status": "FAILED", "StatusReason": "Export stk-security-prod not found"}
+        return world.create_change_set(args)
+
+    cli.on("cloudformation create-change-set", create)
+    assert deploy.main(["deploy", "--env", "prod", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert "network-prod: not evaluated in the dry run" in out
+    assert world.statuses == {}  # the REVIEW_IN_PROGRESS stacks were deleted
+    assert not cli.called("cloudformation execute-change-set")
+
+
+def test_dry_run_fails_when_the_first_stack_cannot_be_evaluated(repo: Path, cli: FakeCli) -> None:
+    world = World(cli, {"stk-useast2-oecalc-eks-security-prod": "CREATE_COMPLETE"})
+    world.change_set = {"Status": "FAILED", "StatusReason": "Template format error"}
+    assert deploy.main(["deploy", "--env", "prod", "--dry-run"]) == 1
+
+
+def test_dry_run_refuses_a_rolled_back_stack_without_deleting_it(repo: Path, cli: FakeCli) -> None:
+    World(cli, {"stk-useast2-oecalc-eks-security-prod": "ROLLBACK_COMPLETE"})
+    assert deploy.main(["deploy", "--env", "prod", "--dry-run"]) == 1
+    assert not cli.called("cloudformation delete-stack")

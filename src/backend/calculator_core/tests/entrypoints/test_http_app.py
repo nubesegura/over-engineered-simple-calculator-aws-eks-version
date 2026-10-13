@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import io
 import json
@@ -272,6 +273,42 @@ def test_a_failing_notifier_never_breaks_the_response() -> None:
 
     assert response.status_code == 500
     assert error_of(response)["message"] == "An internal error occurred."
+
+
+def test_the_alert_is_published_off_the_event_loop() -> None:
+    seen: list[bool] = []
+
+    class LoopProbe(RecordingNotifier):
+        def notify(self, report: InternalErrorReport) -> None:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                seen.append(False)
+            else:
+                seen.append(True)
+
+    client = make_client(
+        Operation.ADD, repository=FailingRepository(RuntimeError("x")), notifier=LoopProbe()
+    )
+
+    assert client.post("/api/v1/add", json={"a": 1, "b": 2}).status_code == 500
+    assert seen == [False]
+
+
+def test_a_failed_alert_is_logged_by_type_only(caplog: pytest.LogCaptureFixture) -> None:
+    client = make_client(
+        Operation.ADD,
+        repository=FailingRepository(RuntimeError("x")),
+        notifier=RecordingNotifier(fail=True),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        client.post("/api/v1/add", json={"a": 1, "b": 2})
+
+    failures = [r for r in caplog.records if "notification failed" in r.getMessage()]
+    assert [r.getMessage() for r in failures] == ["The error notification failed (RuntimeError)."]
+    assert "notifier down" not in caplog.text
+    assert failures[0].exc_info is None
 
 
 def jwt_with(payload: dict[str, object]) -> str:

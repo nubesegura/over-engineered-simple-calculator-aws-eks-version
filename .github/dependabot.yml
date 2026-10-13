@@ -1,0 +1,60 @@
+# Dependabot version updates (QG-009): once a week, grouped, at most 5 open pull requests per ecosystem.
+#
+# Security updates are separate and stay immediate: GitHub raises them from Dependabot alerts whenever an
+# advisory appears, whatever the schedule below says (this file only schedules the routine version updates).
+#
+# The repository pins GitHub Actions by commit SHA (with the version in a trailing comment) and images by digest;
+# Dependabot keeps that style when it updates them. Not covered by Dependabot, so they are refreshed by hand:
+# the postgres service image of ci.yml (env POSTGRES_IMAGE), the Helm archive checksum and the add-on versions.
+version: 2
+
+updates:
+  - package-ecosystem: pip
+    directories:
+      - /src/backend/calculator_core
+      - /src/rotation
+      - /src/scheduler
+      - /scripts
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(pip)"
+    groups:
+      python-minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: docker
+    directory: /src/backend
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(docker)"
+    groups:
+      docker-base-images:
+        patterns:
+          - "*"
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "deps(actions)"
+    groups:
+      github-actions:
+        patterns:
+          - "*"

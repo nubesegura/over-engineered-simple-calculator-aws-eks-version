@@ -7,7 +7,7 @@ already pooled keep working across a password rotation and new ones pick up the 
 
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from decimal import Decimal
 from typing import Any, LiteralString, Self
 from uuid import UUID
@@ -41,7 +41,10 @@ _SELECT: LiteralString = (
 _AFTER_CURSOR: LiteralString = " WHERE (occurred_at, calculation_id) < (%s, %s)"
 _ORDER_LIMIT: LiteralString = " ORDER BY occurred_at DESC, calculation_id DESC LIMIT %s"
 
-DEFAULT_CONNECT_TIMEOUT_SECONDS = 10
+# Defaults of the pool arguments; the composition root passes the configured values.
+DEFAULT_CONNECT_TIMEOUT_SECONDS = 3
+DEFAULT_POOL_TIMEOUT_SECONDS = 3
+DEFAULT_POOL_MAX_WAITING = 20
 _AUTH_SQLSTATES = {"28000", "28P01"}
 
 
@@ -103,8 +106,15 @@ def create_pool(
     provider: CredentialsProvider,
     min_size: int = 1,
     max_size: int = 5,
+    connect_timeout: float = DEFAULT_CONNECT_TIMEOUT_SECONDS,
+    pool_timeout: float = DEFAULT_POOL_TIMEOUT_SECONDS,
+    max_waiting: int = DEFAULT_POOL_MAX_WAITING,
 ) -> ConnectionPool[Any]:
-    """Build the pool and start opening it; new connections use the provider's credentials."""
+    """Build the pool and start opening it; new connections use the provider's credentials.
+
+    A request waits at most `pool_timeout` seconds for a connection and at most `max_waiting`
+    requests queue for one (more fail at once), so a database outage cannot pile up threads.
+    """
     conninfo = make_conninfo(
         host=host, port=port, dbname=dbname, sslmode="verify-full", sslrootcert=ssl_root_cert
     )
@@ -121,7 +131,7 @@ def create_pool(
     class RotatingConnection(psycopg.Connection[TupleRow]):
         @classmethod
         def connect(cls, conninfo: str = "", **kwargs: Any) -> Self:
-            options = {"connect_timeout": DEFAULT_CONNECT_TIMEOUT_SECONDS, **kwargs}
+            options = {"connect_timeout": connect_timeout, **kwargs}
             connection: Self = connector.connect(**options)
             return connection
 
@@ -130,7 +140,8 @@ def create_pool(
         connection_class=RotatingConnection,
         min_size=min_size,
         max_size=max_size,
-        timeout=10,
+        timeout=pool_timeout,
+        max_waiting=max_waiting,
         open=False,
         check=ConnectionPool.check_connection,
     )
@@ -157,6 +168,27 @@ class PostgresCalculationRepository:
                 written = bool(connection.execute(_INSERT, params).rowcount == 1)
         except psycopg.Error as error:
             raise InfrastructureError("The calculation could not be saved.", error) from error
+        return written
+
+    def save_many(self, calculations: Sequence[Calculation]) -> int:
+        rows = [
+            (
+                c.id,
+                c.operation.value,
+                c.operand_a,
+                c.operand_b,
+                c.result,
+                c.occurred_at,
+                c.correlation_id,
+            )
+            for c in calculations
+        ]
+        try:
+            with self._pool.connection() as connection, connection.cursor() as cursor:
+                cursor.executemany(_INSERT, rows)
+                written = int(max(cursor.rowcount, 0))
+        except psycopg.Error as error:
+            raise InfrastructureError("The calculations could not be saved.", error) from error
         return written
 
     def list_page(self, limit: int, after: HistoryCursor | None) -> list[Calculation]:

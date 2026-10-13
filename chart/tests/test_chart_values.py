@@ -98,6 +98,8 @@ def test_environment_files_only_hold_environment_values(env: str) -> None:
         "app.allowedOrigin",
         "app.logLevel",
         "network.vpcCidr",
+        "network.albCidrs",
+        "network.databaseCidrs",
         "ingress.wafAclArn",
         "ingress.wafRequired",
         "quota.limitsCpu",
@@ -123,6 +125,24 @@ def test_environment_vpc_cidr_matches_the_parameters() -> None:
     for env in ("dev", "prod"):
         parameters = json.loads((CHART.parent / "parameters" / f"{env}.json").read_text(encoding="utf-8"))
         assert load(f"values-{env}.yaml")["network"]["vpcCidr"] == parameters["Parameters"]["VpcCidr"]
+
+
+def test_environment_subnet_cidrs_are_the_slices_of_the_vpc_range() -> None:
+    import ipaddress
+    import json
+
+    # Fn::Cidr [VpcCidr, 13, 8] in templates/network.yaml: public subnets are slices 1 and 2, private 11 and 12
+    for env in ("dev", "prod"):
+        parameters = json.loads((CHART.parent / "parameters" / f"{env}.json").read_text(encoding="utf-8"))
+        slices = [str(n) for n in ipaddress.ip_network(parameters["Parameters"]["VpcCidr"]).subnets(new_prefix=24)]
+        network = load(f"values-{env}.yaml")["network"]
+        assert network["albCidrs"] == [slices[1], slices[2]]
+        assert network["databaseCidrs"] == [slices[11], slices[12]]
+    template = (CHART.parent / "templates" / "network.yaml").read_text(encoding="utf-8")
+    assert "CidrBlock: !Select [1, !Cidr [!Ref VpcCidr, 13, 8]]" in template  # PublicSubnetA
+    assert "CidrBlock: !Select [2, !Cidr [!Ref VpcCidr, 13, 8]]" in template  # PublicSubnetB
+    assert "CidrBlock: !Select [11, !Cidr [!Ref VpcCidr, 13, 8]]" in template  # PrivateSubnetA
+    assert "CidrBlock: !Select [12, !Cidr [!Ref VpcCidr, 13, 8]]" in template  # PrivateSubnetB
 
 
 def test_chart_files_have_no_account_ids_or_secrets() -> None:

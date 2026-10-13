@@ -1,5 +1,6 @@
 """In-memory fakes of the outbound ports, shared by the unit tests."""
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -28,12 +29,21 @@ class InMemoryCalculationRepository:
 
     def __init__(self) -> None:
         self.rows: dict[UUID, Calculation] = {}
+        self.batch_sizes: list[int] = []
+        self.fail_on_batch: int | None = None
 
     def save(self, calculation: Calculation) -> bool:
         if calculation.id in self.rows:
             return False
         self.rows[calculation.id] = calculation
         return True
+
+    def save_many(self, calculations: Sequence[Calculation]) -> int:
+        """All-or-nothing like a transaction; `fail_on_batch` (1-based) simulates an outage."""
+        if self.fail_on_batch == len(self.batch_sizes) + 1:
+            raise InfrastructureError("db down")
+        self.batch_sizes.append(len(calculations))
+        return sum(1 for calculation in calculations if self.save(calculation))
 
     def list_page(self, limit: int, after: HistoryCursor | None) -> list[Calculation]:
         ordered = sorted(self.rows.values(), key=sort_key, reverse=True)
@@ -47,6 +57,9 @@ class FailingRepository:
         self.error = error
 
     def save(self, calculation: Calculation) -> bool:
+        raise self.error
+
+    def save_many(self, calculations: Sequence[Calculation]) -> int:
         raise self.error
 
     def list_page(self, limit: int, after: HistoryCursor | None) -> list[Calculation]:

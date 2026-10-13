@@ -229,6 +229,24 @@ def test_autoscaler_of_another_minor_is_skipped_with_a_notice_unless_the_owner_a
 
 
 @needs_bash
+def test_prod_fails_before_installing_anything_when_the_autoscaler_would_be_skipped(run_script: Any) -> None:
+    failed = run_script(ENV_TYPE="prod", KUBERNETES_VERSION="1.99")
+    assert not failed.ok
+    assert "environment is prod" in failed.result.stderr and "Nothing was installed" in failed.result.stderr
+    assert failed.calls == [] and failed.kubectl == []  # no pull, no install, no RBAC
+    assert "NOTICE" not in failed.result.stdout
+    explicit_false = run_script(ENV_TYPE="prod", KUBERNETES_VERSION="1.99", ALLOW_AUTOSCALER_MINOR_SKEW="false")
+    assert not explicit_false.ok and explicit_false.calls == []
+    # the owner's explicit acceptance keeps working in prod, and a matching minor is not a skew
+    accepted = run_script(ENV_TYPE="prod", KUBERNETES_VERSION="1.99", ALLOW_AUTOSCALER_MINOR_SKEW="true")
+    assert accepted.ok and "minor skew accepted" in accepted.result.stdout
+    tag_minor = re.search(r"tag: v(\d+\.\d+)", CA_VALUES.read_text(encoding="utf-8"))
+    assert tag_minor is not None
+    matching = run_script(ENV_TYPE="prod", KUBERNETES_VERSION=tag_minor.group(1))
+    assert matching.ok and len(matching.calls) == 4
+
+
+@needs_bash
 def test_operator_rbac_is_applied_after_the_controller_and_only_when_the_cluster_answers(run_script: Any) -> None:
     run = run_script()
     assert run.kubectl[0] == "get --raw=/readyz"

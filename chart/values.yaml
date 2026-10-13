@@ -48,7 +48,12 @@ cursor:
   secretArn: ""
 
 network:
-  vpcCidr: ""           # source of the load balancer and destination of the proxy; set per environment
+  vpcCidr: ""           # whole VPC range: only used to EXCLUDE it from the HTTPS egress; set per environment
+  # Public subnets where the load balancer nodes live (slices 1 and 2 of VpcCidr in templates/network.yaml); the only
+  # source admitted to the API pods. Set per environment; a test derives them from parameters/<env>.json.
+  albCidrs: []
+  # Private subnets of the RDS Proxy and the instance (slices 11 and 12): the only destination of port 5432
+  databaseCidrs: []
   databasePort: 5432
   podIdentityAgentIp: 169.254.170.23   # EKS Pod Identity agent (credentials of the pods), HTTP port 80
 
@@ -116,32 +121,39 @@ serviceAccounts:
 # Workloads. kind http: one template renders each into Deployment, Service and, above one replica, a
 # PodDisruptionBudget. kind worker: Deployment only (no port, no Service, no Ingress route, no probe, no
 # PodDisruptionBudget); its replicas are fixed in the workload. The container argument is the workload name.
+# `egress` lists the network rules of the workload's own NetworkPolicy (dns, database, aws, podIdentity); its ingress
+# comes from the kind (http: the load balancer subnets on the pod port; worker and job: none).
 # A map (not a list) so that an environment file can override single fields.
 workloads:
   add:
     kind: http
     serviceAccount: calc
     profile: calc
+    egress: [dns, database, aws, podIdentity]
     routes: [/api/v1/add, /api/eks/v1/add]
   sub:
     kind: http
     serviceAccount: calc
     profile: calc
+    egress: [dns, database, aws, podIdentity]
     routes: [/api/v1/sub, /api/eks/v1/sub]
   mul:
     kind: http
     serviceAccount: calc
     profile: calc
+    egress: [dns, database, aws, podIdentity]
     routes: [/api/v1/mul, /api/eks/v1/mul]
   div:
     kind: http
     serviceAccount: calc
     profile: calc
+    egress: [dns, database, aws, podIdentity]
     routes: [/api/v1/div, /api/eks/v1/div]
   history:
     kind: http
     serviceAccount: history
     profile: history
+    egress: [dns, database, aws, podIdentity]
     routes: [/api/v1/history, /api/eks/v1/history]
   # Reads the CSV queue; one replica in every environment (a second one would only double the polling)
   ingest:
@@ -149,6 +161,7 @@ workloads:
     serviceAccount: ingest
     profile: ingest
     replicas: 1
+    egress: [dns, database, aws, podIdentity]
 
 # Schema migration job. One Job per deployment: the name carries runId (the deployment passes its run number)
 # or, when empty, the release revision. It is not a hook: it needs the namespace and the service account.
@@ -156,6 +169,7 @@ migrate:
   enabled: true
   serviceAccount: migrate
   profile: migrate
+  egress: [dns, database, aws, podIdentity]
   runId: ""
   ttlSecondsAfterFinished: 3600
   activeDeadlineSeconds: 900

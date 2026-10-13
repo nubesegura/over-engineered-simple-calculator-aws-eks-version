@@ -67,6 +67,9 @@ install_autoscaler=true
 if [ "$(minor_of "$KUBERNETES_VERSION")" != "$(minor_of "$autoscaler_tag")" ]; then
   if [ "${ALLOW_AUTOSCALER_MINOR_SKEW:-false}" = "true" ]; then
     echo "WARNING: Cluster Autoscaler ${autoscaler_tag} runs on Kubernetes ${KUBERNETES_VERSION} (minor skew accepted by the owner)"
+  elif [ "$ENV_TYPE" = "prod" ]; then
+    # prod must never run without autoscaling by accident (HPA would leave pods Pending): stop before any install
+    fail "Cluster Autoscaler ${autoscaler_tag} does not match Kubernetes ${KUBERNETES_VERSION} and the environment is prod; bump the pinned chart and image to the matching release (task 6.2) or set AllowAutoscalerMinorSkew=true after the owner accepts the skew. Nothing was installed"
   else
     install_autoscaler=false
     echo "NOTICE: Cluster Autoscaler ${autoscaler_tag} does not match Kubernetes ${KUBERNETES_VERSION}; skipping it until the matching release is installed (task 6.2) or AllowAutoscalerMinorSkew is true"

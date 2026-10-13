@@ -67,6 +67,13 @@ def test_id_depends_on_content_only() -> None:
         ("pow,1,2,2026-10-01T10:00:00Z", "unknown operation"),
         ("add,x,2,2026-10-01T10:00:00Z", "operand_a is not a number"),
         ("add,1,NaN,2026-10-01T10:00:00Z", "finite"),
+        ("add,sNaN,2,2026-10-01T10:00:00Z", "finite"),
+        ("add,1,-sNaN,2026-10-01T10:00:00Z", "finite"),
+        ("mul,Infinity,2,2026-10-01T10:00:00Z", "finite"),
+        ("mul,1,-Infinity,2026-10-01T10:00:00Z", "finite"),
+        ("add,1e50000000,2,2026-10-01T10:00:00Z", "between"),
+        ("add,1,-1e999999999999999,2026-10-01T10:00:00Z", "between"),
+        ("div,1,1e-50000000,2026-10-01T10:00:00Z", "decimal places"),
         ("div,1,0,2026-10-01T10:00:00Z", "Division by zero"),
         ("add,1,2,yesterday", "ISO-8601"),
         ("add,1,2,2026-10-01T10:00:00", "UTC"),
@@ -168,3 +175,63 @@ def test_database_failure_raises_and_keeps_the_file_in_incoming() -> None:
         use_case.execute(KEY)
 
     assert set(store.objects) == {KEY}
+
+
+def rows_text(count: int) -> str:
+    return HEADER + "".join(f"add,{n},1,2026-10-01T10:00:00Z\n" for n in range(count))
+
+
+def make_batched(
+    count: int, batch_size: int
+) -> tuple[IngestCsv, InMemoryObjectStore, InMemoryCalculationRepository]:
+    store = InMemoryObjectStore({KEY: rows_text(count).encode()})
+    repository = InMemoryCalculationRepository()
+    use_case = IngestCsv(store, repository, RecordingNotifier(), "s", "dev", batch_size)
+    return use_case, store, repository
+
+
+@pytest.mark.parametrize(
+    ("count", "batch_size", "expected"),
+    [(0, 3, []), (3, 3, [3]), (4, 3, [3, 1]), (7, 3, [3, 3, 1]), (2, 500, [2])],
+)
+def test_valid_rows_are_saved_in_batches_of_the_configured_size(
+    count: int, batch_size: int, expected: list[int]
+) -> None:
+    use_case, store, repository = make_batched(count, batch_size)
+
+    result = use_case.execute(KEY)
+
+    assert repository.batch_sizes == expected
+    assert (result.created, result.duplicates) == (count, 0)
+    assert set(store.objects) == {"processed/batch.csv"}
+
+
+def test_an_outage_in_a_later_batch_keeps_the_file_and_the_retry_creates_no_duplicates() -> None:
+    use_case, store, repository = make_batched(7, 3)
+    repository.fail_on_batch = 2
+
+    with pytest.raises(InfrastructureError):
+        use_case.execute(KEY)
+
+    assert set(store.objects) == {KEY}
+    assert len(repository.rows) == 3
+    repository.fail_on_batch = None
+
+    result = use_case.execute(KEY)
+
+    assert (result.created, result.duplicates) == (4, 3)
+    assert len(repository.rows) == 7
+    assert set(store.objects) == {"processed/batch.csv"}
+
+
+def test_a_file_at_the_size_ceiling_is_ingested_in_bounded_batches() -> None:
+    body = HEADER + "".join(f"add,{n},2,2026-10-01T10:00:00Z\n" for n in range(100000))
+    assert len(body) < MAX_FILE_BYTES
+    store = InMemoryObjectStore({KEY: body.encode()})
+    repository = InMemoryCalculationRepository()
+    use_case = IngestCsv(store, repository, RecordingNotifier(), "s", "dev", 500)
+
+    use_case.execute(KEY)
+
+    assert max(repository.batch_sizes) == 500
+    assert len(repository.batch_sizes) == 200
