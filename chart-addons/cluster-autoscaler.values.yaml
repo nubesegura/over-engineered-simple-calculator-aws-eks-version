@@ -28,6 +28,15 @@ rbac:
     name: cluster-autoscaler
     annotations: {}
 
+# Behaviour (requirement 17, task 6.2):
+#  - Discovery: no autoscalingGroups and no --nodes: the chart discovers the Auto Scaling group of the managed node
+#    group by the two tags above. The limit of 4 nodes (and the minimum of 2) is the group's own ScalingConfig
+#    (NodeMinSize/NodeMaxSize of the cluster stack), the single source of truth; the autoscaler never exceeds it.
+#  - Scale-down: a node that stays underused for 10 minutes is removed (scale-down-unneeded-time).
+#  - Disruption: pods covered by a PodDisruptionBudget are evicted only within the budget (autoscaler default);
+#    pods of kube-system without a budget keep their node (skip-nodes-with-system-pods stays at its default).
+#  - It needs the NAT gateway: the node instances and the autoscaler call AWS public endpoints through it. While
+#    the NAT gateway is removed (dev, outside the scheduler window) no node can join and the autoscaler cannot scale up.
 extraArgs:
   logtostderr: true
   stderrthreshold: info

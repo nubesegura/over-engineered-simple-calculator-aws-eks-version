@@ -1,6 +1,6 @@
 {{- /*
 One template for every workload: HTTP ones (add, sub, mul, div, history) get Deployment, Service and, above one
-replica, a PodDisruptionBudget; the worker (ingest) gets only a Deployment with no port, probe or Service.
+replica (the HPA minimum when autoscaling is on), a PodDisruptionBudget; the worker (ingest) gets only a Deployment with no port, probe or Service.
 The container argument selects the workload of the single image.
 */}}
 {{- $ns := include "calc.namespace" . }}
@@ -12,6 +12,9 @@ The container argument selects the workload of the single image.
 {{- end }}
 {{- $replicas := int (default $.Values.replicaCount $w.replicas) }}
 {{- $worker := eq $w.kind "worker" }}
+{{- /* HTTP workloads are scaled by the HorizontalPodAutoscaler (hpa.yaml): the Deployment then has no replicas field,
+because Helm would reset the count at every upgrade. $replicas is then the HPA minimum (replicaCount). */}}
+{{- $hpa := and (not $worker) $.Values.autoscaling.enabled }}
 {{- $component := ternary "worker" "api" $worker }}
 {{- $selector := dict "root" $ "name" $name }}
 ---
@@ -23,7 +26,9 @@ metadata:
   labels:
     {{- include "calc.labels" (dict "root" $ "name" $name "component" $component) | nindent 4 }}
 spec:
+  {{- if not $hpa }}
   replicas: {{ $replicas }}
+  {{- end }}
   revisionHistoryLimit: 3
   strategy:
     type: RollingUpdate

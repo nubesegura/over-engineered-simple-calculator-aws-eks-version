@@ -159,7 +159,7 @@ def test_requests_and_limits_on_every_container(docs: list[Doc]) -> None:
             assert res[section]["cpu"] and res[section]["memory"], name
     for deployment in of_kind(docs, "Deployment"):
         if deployment["metadata"]["name"] in {"add", "sub", "mul", "div"}:
-            assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["cpu"] == "100m"
+            assert deployment["spec"]["template"]["spec"]["containers"][0]["resources"]["requests"]["cpu"] == "250m"
 
 
 def test_topology_spread_across_zones(docs: list[Doc]) -> None:
@@ -203,9 +203,18 @@ def test_services_are_cluster_ip_on_8443(docs: list[Doc]) -> None:
 
 def test_pod_disruption_budget_only_above_one_replica(env: str, docs: list[Doc]) -> None:
     budgets = of_kind(docs, "PodDisruptionBudget")
-    replicas = {d["metadata"]["name"]: d["spec"]["replicas"] for d in of_kind(docs, "Deployment")}
-    assert sorted(b["metadata"]["name"] for b in budgets) == sorted(n for n, r in replicas.items() if r > 1)
+    minimum = {d["metadata"]["name"]: d["spec"]["minReplicas"] for d in of_kind(docs, "HorizontalPodAutoscaler")}
+    minimum[WORKER] = worker(docs)["spec"]["replicas"]
+    assert sorted(b["metadata"]["name"] for b in budgets) == sorted(n for n, r in minimum.items() if r > 1)
     assert (len(budgets) == 5) == (env == "prod")  # the worker never has one
+
+
+def test_budgets_follow_fixed_replicas_when_autoscaling_is_off(env: str) -> None:
+    docs = render(env, {"autoscaling.enabled": False}, drop=())
+    assert not of_kind(docs, "HorizontalPodAutoscaler")
+    replicas = {d["metadata"]["name"]: d["spec"]["replicas"] for d in of_kind(docs, "Deployment")}
+    assert all(replicas[name] == (2 if env == "prod" else 1) for name in HTTP)
+    assert len(of_kind(docs, "PodDisruptionBudget")) == (5 if env == "prod" else 0)
 
 
 def test_migrate_job_exists_once_and_is_one_shot(docs: list[Doc]) -> None:
@@ -462,3 +471,60 @@ def test_load_balancer_logs_go_to_the_alb_prefix(docs: list[Doc]) -> None:
     for ingress in ingresses(docs):
         attributes = dict(item.split("=", 1) for item in anns(ingress)[ANN + "load-balancer-attributes"].split(","))
         assert attributes["access_logs.s3.prefix"] == "alb"  # the only prefix the bucket policy accepts
+
+
+def test_one_autoscaler_per_http_workload_with_the_cpu_target_and_window(env: str, docs: list[Doc]) -> None:
+    autoscalers = of_kind(docs, "HorizontalPodAutoscaler")
+    assert sorted(a["metadata"]["name"] for a in autoscalers) == sorted(HTTP)  # never the worker
+    for hpa in autoscalers:
+        spec = hpa["spec"]
+        assert spec["scaleTargetRef"] == {
+            "apiVersion": "apps/v1",
+            "kind": "Deployment",
+            "name": hpa["metadata"]["name"],
+        }
+        assert spec["minReplicas"] == (2 if env == "prod" else 1) and spec["maxReplicas"] == 4
+        assert spec["metrics"] == [
+            {
+                "type": "Resource",
+                "resource": {"name": "cpu", "target": {"type": "Utilization", "averageUtilization": 50}},
+            }
+        ]
+        assert spec["behavior"]["scaleDown"]["stabilizationWindowSeconds"] == 300
+
+
+def test_scaled_deployments_have_no_replicas_field_and_the_worker_keeps_one(docs: list[Doc]) -> None:
+    for deployment in of_kind(docs, "Deployment"):
+        name = deployment["metadata"]["name"]
+        if name in HTTP:
+            assert "replicas" not in deployment["spec"], name
+        else:
+            assert deployment["spec"]["replicas"] == 1 and name == WORKER
+
+
+def _amount(text: str) -> float:
+    """CPU in cores or memory in MiB, from a Kubernetes quantity (m, Mi, Gi or a plain number)."""
+    for suffix, factor in (("Gi", 1024.0), ("Mi", 1.0), ("m", 0.001)):
+        if text.endswith(suffix):
+            return float(text[: -len(suffix)]) * factor
+    return float(text)
+
+
+def test_quota_fits_every_workload_at_maximum_replicas_plus_one_surge_pod(docs: list[Doc]) -> None:
+    hard = named(docs, "ResourceQuota", "calculator-quota")["spec"]["hard"]
+    maximum = {a["metadata"]["name"]: a["spec"]["maxReplicas"] for a in of_kind(docs, "HorizontalPodAutoscaler")}
+    totals = dict.fromkeys(hard, 0.0)
+
+    def add(pods: int, resources: Doc) -> None:
+        totals["pods"] += pods
+        for section in ("requests", "limits"):
+            for kind in ("cpu", "memory"):
+                totals[f"{section}.{kind}"] += pods * _amount(resources[section][kind])
+
+    for deployment in of_kind(docs, "Deployment"):
+        name = deployment["metadata"]["name"]
+        pods = maximum[name] + 1 if name in maximum else deployment["spec"]["replicas"]  # surge: maxSurge 1
+        add(pods, deployment["spec"]["template"]["spec"]["containers"][0]["resources"])
+    add(1, of_kind(docs, "Job")[0]["spec"]["template"]["spec"]["containers"][0]["resources"])  # migrate pod running
+    for key, used in totals.items():
+        assert used <= _amount(hard[key]), f"{key}: {used} is above the quota {hard[key]}"

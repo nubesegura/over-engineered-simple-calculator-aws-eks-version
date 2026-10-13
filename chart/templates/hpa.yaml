@@ -1,0 +1,37 @@
+{{- /*
+One HorizontalPodAutoscaler per HTTP workload (add, sub, mul, div, history); the worker is never scaled.
+CPU is measured against the CPU request of the pod (requirement 17.2). The minimum is replicaCount (1 in dev, 2 in
+prod, where the PodDisruptionBudget applies). Scaling down waits for the stabilization window.
+*/}}
+{{- if .Values.autoscaling.enabled }}
+{{- $ns := include "calc.namespace" . }}
+{{- range $name, $w := .Values.workloads }}
+{{- if eq $w.kind "http" }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ $name }}
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" $ "name" $name "component" "api") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ $name }}
+  minReplicas: {{ int $.Values.replicaCount }}
+  maxReplicas: {{ int $.Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ int $.Values.autoscaling.cpuTargetUtilization }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ int $.Values.autoscaling.scaleDownStabilizationSeconds }}
+{{- end }}
+{{- end }}
+{{- end }}

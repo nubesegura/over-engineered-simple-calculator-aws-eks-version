@@ -295,6 +295,33 @@ def test_autoscaler_arguments_and_image() -> None:
     assert "autoscalingGroups" not in autoscaler
 
 
+def test_discovery_tags_and_node_limits_come_from_the_node_group() -> None:
+    """Task 6.2: the chart builds `asg:tag=k8s.io/cluster-autoscaler/enabled,k8s.io/cluster-autoscaler/<cluster>`
+    from autoDiscovery.clusterName; the node group must carry both tags, the cluster name passed by the script
+    must be the cluster of the stack, and the maximum of the group (not a --nodes argument) is the node limit."""
+    from test_templates_m2 import env_parameters, load_cfn
+
+    cluster = load_cfn("cluster.yaml")
+    launch = cluster["Resources"]["NodeLaunchTemplate"]["Properties"]["LaunchTemplateData"]
+    instance_tags = next(s for s in launch["TagSpecifications"] if s["ResourceType"] == "instance")["Tags"]
+    tags = {t["Key"]["Fn::Sub"] if isinstance(t["Key"], dict) else t["Key"]: t["Value"] for t in instance_tags}
+    group = cluster["Resources"]["NodeGroup"]["Properties"]
+    cluster_name = cluster["Resources"]["Cluster"]["Properties"]["Name"]["Fn::Sub"]
+    assert group["Tags"]["k8s.io/cluster-autoscaler/enabled"] == "true" == tags["k8s.io/cluster-autoscaler/enabled"]
+    assert tags[f"k8s.io/cluster-autoscaler/{cluster_name}"] == "owned"  # same text as the cluster name
+    assert group["ScalingConfig"]["MaxSize"] == {"Ref": "NodeMaxSize"}
+    assert '--set-string "autoDiscovery.clusterName=${CLUSTER_NAME}"' in SCRIPT.read_text(encoding="utf-8")
+    autoscaler = load_values(CA_VALUES)
+    assert not {"nodes", "max-nodes-total", "skip-nodes-with-system-pods"} & set(autoscaler["extraArgs"])
+    for name in ("dev", "prod"):  # 2 to 4 nodes in both environments (requirement 17.3)
+        parameters = env_parameters(name)
+        assert (parameters["NodeMinSize"], parameters["NodeMaxSize"]) == ("2", "4")
+        rendered = cluster_name.replace("${RegionCode}", parameters["RegionCode"]).replace(
+            "${Context}", parameters["Context"]
+        )
+        assert rendered.replace("${EnvType}", name) == f"eksc-{parameters['RegionCode']}-{parameters['Context']}-{name}"
+
+
 def test_values_do_not_fix_what_the_stack_provides() -> None:
     lbc, autoscaler = load_values(LBC_VALUES), load_values(CA_VALUES)
     assert not {"clusterName", "region", "vpcId", "defaultTags"} & set(lbc)

@@ -26,6 +26,7 @@ ALLOWED_KINDS = {
     "Deployment",
     "Service",
     "PodDisruptionBudget",
+    "HorizontalPodAutoscaler",
     "Job",
     "NetworkPolicy",
     "Ingress",
@@ -86,7 +87,7 @@ def test_every_profile_has_requests_and_limits() -> None:
     for name, profile in profiles.items():
         for section in ("requests", "limits"):
             assert profile[section]["cpu"] and profile[section]["memory"], f"{name}.{section}"
-    assert profiles["calc"]["requests"]["cpu"] == "100m"
+    assert profiles["calc"]["requests"]["cpu"] == "250m"
 
 
 @pytest.mark.parametrize("env", ["dev", "prod"])
@@ -99,6 +100,8 @@ def test_environment_files_only_hold_environment_values(env: str) -> None:
         "network.vpcCidr",
         "ingress.wafAclArn",
         "ingress.wafRequired",
+        "quota.limitsCpu",
+        "quota.limitsMemory",
     }
     base = flatten(load("values.yaml"))
     for key in flatten(load(f"values-{env}.yaml")):

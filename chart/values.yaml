@@ -79,12 +79,22 @@ topologySpread:
   maxSkew: 1
   whenUnsatisfiable: ScheduleAnyway
 
+# Replicas of an HTTP workload without autoscaling, and the minimum of its HorizontalPodAutoscaler with it.
+# Above 1 a PodDisruptionBudget is rendered (prod sets 2).
 replicaCount: 1
+
+# One HorizontalPodAutoscaler per HTTP workload (never the worker): scales on CPU use against the CPU request.
+# enabled=false returns to fixed replicas (replicaCount) and the Deployments set `replicas` again.
+autoscaling:
+  enabled: true
+  cpuTargetUtilization: 50
+  maxReplicas: 4
+  scaleDownStabilizationSeconds: 300
 
 # Requests and limits by profile; environments override only the numbers that differ.
 resourceProfiles:
   calc:
-    requests: {cpu: 100m, memory: 128Mi}
+    requests: {cpu: 250m, memory: 128Mi}
     limits: {cpu: 500m, memory: 256Mi}
   history:
     requests: {cpu: 50m, memory: 128Mi}
@@ -150,11 +160,13 @@ migrate:
   ttlSecondsAfterFinished: 3600
   activeDeadlineSeconds: 900
 
+# Sized for every HTTP workload at autoscaling.maxReplicas plus one surge pod each during a rolling update
+# (a test sums them); prod raises the limits because its calc/history limits are larger.
 quota:
   pods: "40"
-  requestsCpu: "3"
+  requestsCpu: "6"
   requestsMemory: 4Gi
-  limitsCpu: "8"
+  limitsCpu: "12"
   limitsMemory: 8Gi
 
 # Maximum of one container is below what a t4g.medium node can give (2 vCPU, 4 GiB)

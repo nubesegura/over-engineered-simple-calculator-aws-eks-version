@@ -1,7 +1,7 @@
 # Environment values: prod. Placeholders are overridden by the deployment script (--set); no account ids here.
 envType: prod
 
-# Two replicas spread across the zones, so the PodDisruptionBudget applies
+# Two replicas (the HPA minimum) spread across the zones, so the PodDisruptionBudget applies
 replicaCount: 2
 
 app:
@@ -21,3 +21,8 @@ resourceProfiles:
 ingress:
   wafRequired: true
   wafAclArn: ""
+
+# Larger calc/history limits above: four replicas of each plus a surge pod must still fit
+quota:
+  limitsCpu: "24"
+  limitsMemory: 14Gi
