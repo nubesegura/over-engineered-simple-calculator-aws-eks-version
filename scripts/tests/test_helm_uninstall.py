@@ -12,13 +12,24 @@ from test_helm_deploy import BASH, REPO, needs_bash
 
 SCRIPT = REPO / "scripts" / "helm_uninstall.sh"
 # FAKE_RELEASES lists the installed releases; FAKE_DOWN makes the cluster unreachable; FAKE_NO_CRD hides the CRD.
+# FAKE_UNINSTALL_FAILS makes helm uninstall fail; FAKE_PURGE_FAILS also removes the release from the list, as when the
+# namespace that holds the history is deleted by the uninstall itself.
 FAKE_HELM = r"""#!/usr/bin/env bash
 echo "helm $*" >> "$CALL_LOG"
 if [ "$1" = "list" ]; then
   [ -z "${FAKE_DOWN:-}" ] || exit 1
   for release in $FAKE_RELEASES; do
+    [ -f "${CALL_LOG}.gone-${release}" ] && continue
     case "$*" in *"^${release}\$"*) echo "$release" ;; esac
   done
+fi
+if [ "$1" = "uninstall" ]; then
+  if [ -n "${FAKE_PURGE_FAILS:-}" ]; then
+    touch "${CALL_LOG}.gone-$2"
+    echo "Error: uninstall: Failed to purge the release: release: not found" >&2
+    exit 1
+  fi
+  [ -z "${FAKE_UNINSTALL_FAILS:-}" ] || exit 1
 fi
 exit 0
 """
@@ -44,6 +55,8 @@ def run_script(tmp_path: Path) -> Any:
     def run(**overrides: str | None) -> tuple[subprocess.CompletedProcess[str], list[str]]:
         assert BASH is not None
         log.unlink(missing_ok=True)
+        for marker in tmp_path.glob("calls.log.gone-*"):
+            marker.unlink()
         env = {
             **os.environ,
             "CLUSTER_NAME": "eksc-useast2-oecalc-dev",
@@ -108,6 +121,27 @@ def test_a_stuck_ingress_stops_before_the_controller_is_removed(run_script: Any)
     result, calls = run_script(FAKE_INGRESS_STUCK="1")
     assert result.returncode != 0 and "ingress objects" in result.stderr
     assert not [c for c in calls if c.startswith("helm uninstall")]
+
+
+@needs_bash
+def test_a_purge_that_fails_because_the_history_is_gone_counts_as_uninstalled(run_script: Any) -> None:
+    result, calls = run_script(FAKE_PURGE_FAILS="1")
+    assert result.returncode == 0, result.stderr
+    uninstalls = [c.split()[2] for c in calls if c.startswith("helm uninstall")]
+    assert uninstalls == ["calculator", "cluster-autoscaler", "aws-load-balancer-controller"]
+    assert "Release calculator uninstalled (its history was removed with the namespace)" in result.stdout
+
+
+@needs_bash
+def test_an_uninstall_that_fails_with_the_release_still_listed_stops(run_script: Any) -> None:
+    result, calls = run_script(FAKE_UNINSTALL_FAILS="1")
+    assert result.returncode != 0 and "cannot uninstall calculator" in result.stderr
+    assert not [c for c in calls if "helm uninstall cluster-autoscaler" in c]
+
+
+def test_the_namespace_survives_helm_uninstall() -> None:
+    template = (REPO / "chart" / "templates" / "namespace.yaml").read_text(encoding="utf-8")
+    assert "helm.sh/resource-policy: keep" in template
 
 
 @needs_bash

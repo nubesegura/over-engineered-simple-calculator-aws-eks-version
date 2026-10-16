@@ -1,6 +1,9 @@
 {{- if .Values.namespace.create }}
 # Pod Security Admission: restricted is enforced, audited and warned. The Helm ownership metadata is written here
 # so that the namespace can be created before the release (kubectl apply of this template) and still be adopted.
+# The release history is stored in this namespace, so helm uninstall keeps it (resource-policy keep): deleting it
+# from inside the uninstall removes the history first and the purge then fails with "release: not found".
+# scripts/helm_uninstall.sh deletes the namespace after the release.
 apiVersion: v1
 kind: Namespace
 metadata:
@@ -17,4 +20,5 @@ metadata:
   annotations:
     meta.helm.sh/release-name: {{ .Release.Name }}
     meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+    helm.sh/resource-policy: keep
 {{- end }}

@@ -37,8 +37,16 @@ uninstall_release() {
     echo "Release ${release} is not installed in ${namespace}: skipped"
     return 0
   fi
-  helm uninstall "$release" --namespace "$namespace" --wait --timeout "$TIMEOUT" ||
-    fail "cannot uninstall ${release}"
+  if ! helm uninstall "$release" --namespace "$namespace" --wait --timeout "$TIMEOUT"; then
+    # A release installed before the namespace had resource-policy keep deletes its own namespace, and with it the
+    # history; the purge then fails with "release: not found" although the objects are gone. Accept it only when
+    # the release is no longer listed.
+    found="$(helm list --namespace "$namespace" --filter "^${release}\$" --short)" ||
+      fail "cannot list the releases of ${namespace}"
+    [ -z "$found" ] || fail "cannot uninstall ${release}"
+    echo "Release ${release} uninstalled (its history was removed with the namespace)"
+    return 0
+  fi
   echo "Release ${release} uninstalled"
 }
 
