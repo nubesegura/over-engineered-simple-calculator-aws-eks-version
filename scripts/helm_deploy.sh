@@ -117,12 +117,12 @@ set_args=(
 values_args=(-f "${chart_dir}/values.yaml" -f "${chart_dir}/values-${ENV_TYPE}.yaml")
 job_name="migrate-${RUN_ID}"
 
-# ---------------------------------------------------------------- 2. namespace, service accounts, migration
-echo "Applying namespace, service accounts and the migration job ${job_name}"
+# ---------------------------------------------------------------- 2. namespace, service accounts, migration policy, migration
+echo "Applying namespace, service accounts, the migration network policy and the migration job ${job_name}"
 helm template "$RELEASE" "$chart_dir" --namespace "$NAMESPACE" "${values_args[@]}" "${set_args[@]}" \
   --set-string "migrate.runId=${RUN_ID}" \
   --show-only templates/namespace.yaml --show-only templates/serviceaccounts.yaml \
-  --show-only templates/migrate-job.yaml | kubectl apply -f -
+  --show-only templates/migrate-networkpolicy.yaml --show-only templates/migrate-job.yaml | kubectl apply -f -
 
 migration_failed() {
   echo "Migration ${job_name} did not succeed: $1" >&2

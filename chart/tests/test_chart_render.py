@@ -283,6 +283,24 @@ def test_default_deny_and_one_policy_per_workload(docs: list[Doc]) -> None:
     assert policies["migrate-network"]["podSelector"]["matchLabels"].items() <= job_labels.items()
 
 
+def test_release_without_the_job_still_carries_the_migrate_policy(env: str, docs: list[Doc]) -> None:
+    """The release is installed with migrate.enabled=false; the policy must still be in it, or the next job (which
+    runs before the upgrade, under default-deny-all) has no egress."""
+    release_docs = render(env, {"migrate.enabled": False})
+    assert not of_kind(release_docs, "Job")
+    assert set(policy_map(release_docs)) == POLICIES
+    assert policy_map(release_docs)["migrate-network"] == policy_map(docs)["migrate-network"]
+
+
+def test_migrate_policy_carries_the_helm_ownership_annotations(env: str) -> None:
+    for overrides in ({}, {"migrate.enabled": False}):
+        policy = named(render(env, overrides), "NetworkPolicy", "migrate-network")
+        assert policy["metadata"]["annotations"] == {
+            "meta.helm.sh/release-name": "calculator",
+            "meta.helm.sh/release-namespace": "calculator",
+        }
+
+
 @pytest.mark.parametrize("name", HTTP)
 def test_http_workload_ingress_is_only_the_load_balancer_subnets_on_the_pod_port(
     env: str, docs: list[Doc], name: str

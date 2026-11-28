@@ -186,6 +186,8 @@ def test_namespace_accounts_and_job_are_rendered_with_show_only_and_the_run_id(r
     assert "--show-only templates/namespace.yaml" in template
     assert "--show-only templates/serviceaccounts.yaml" in template
     assert "--show-only templates/migrate-job.yaml" in template
+    # the policy of the job must exist before the job starts (the release only has default-deny-all otherwise)
+    assert "--show-only templates/migrate-networkpolicy.yaml" in template
     assert "--set-string migrate.runId=42" in template
     assert "--create-namespace" not in template
 

@@ -1,7 +1,7 @@
 {{- /*
-D8: default deny in the namespace, then one policy per workload (add, sub, mul, div, history, ingest and the migrate
-job) with exactly the ingress and egress that workload needs; no rule is shared between kinds of pods. Enforced by
-the VPC CNI network policy agent.
+D8: default deny in the namespace, then one policy per workload (add, sub, mul, div, history, ingest) with exactly the ingress and egress that workload needs; no rule is shared between kinds of pods. Enforced by
+the VPC CNI network policy agent. The policy of the migrate job is in migrate-networkpolicy.yaml, because it must exist
+in every release (the job runs before the release is upgraded, with migrate.enabled=false in the release itself).
 Ingress: only the HTTP workloads, only from the subnets of the load balancer nodes (network.albCidrs) on the pod
 port. The load balancer in IP mode connects from addresses of its own network interfaces, which no pod or namespace
 selector can name, so the source is an ipBlock; it is NOT the VPC range, because pod addresses are VPC addresses and
@@ -63,7 +63,6 @@ itself and are not filtered by the agent.
 {{- $_ := required "network.databaseCidrs is required (CIDRs of the private subnets of the proxy and the instance)" .Values.network.databaseCidrs }}
 {{- $targets := dict }}
 {{- range $name, $w := .Values.workloads }}{{- $_ := set $targets $name (dict "kind" $w.kind "egress" $w.egress) }}{{- end }}
-{{- if .Values.migrate.enabled }}{{- $_ := set $targets "migrate" (dict "kind" "job" "egress" .Values.migrate.egress) }}{{- end }}
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

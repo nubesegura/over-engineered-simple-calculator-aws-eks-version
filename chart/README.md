@@ -26,8 +26,9 @@ Prod also needs `ingress.wafAclArn` (the render stops without it). Tests: `pytho
   metadata) before `helm upgrade --install`; the release then adopts it. `namespace.create=false` skips it.
 - **Migration.** `templates/migrate-job.yaml` renders one Job named `migrate-<migrate.runId>` (release revision when
   empty). It needs the namespace and the `migrate` service account, so it is not a hook. To run it before the release,
-  render `namespace.yaml`, `serviceaccounts.yaml` and `migrate-job.yaml` with `--show-only`; pass `--set migrate.enabled=false`
-  to the release so the Job is not created twice.
+  render `namespace.yaml`, `serviceaccounts.yaml`, `migrate-networkpolicy.yaml` and `migrate-job.yaml` with `--show-only`;
+  pass `--set migrate.enabled=false` to the release so the Job is not created twice. `migrate-networkpolicy.yaml` is not
+  conditional on `migrate.enabled`: the release keeps the egress of the Job next to `default-deny-all` and adopts it.
 - **IngressGroup and authentication.** Two Ingress objects share `group.name`. `jwt-validation` is read from the
   annotations of each Ingress and applied only to the rules of that Ingress (controller v3.6.0, annotation table:
   merge behaviour "N/A", not Exclusive), so one object can be authenticated and the other not. Annotations that

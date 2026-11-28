@@ -1,0 +1,32 @@
+{{- /*
+D8: network policy of the migration job. It is a separate template and is NOT conditional on migrate.enabled: the
+release is installed with migrate.enabled=false (the job is applied before it by scripts/helm_deploy.sh), and the
+release also contains default-deny-all, so without this policy the next job would have no egress (DNS, database, AWS
+APIs, credentials agent). The deployment script applies it before the job; the release then adopts it. The job has no
+ingress. Egress rules are defined in networkpolicy.yaml (calc.egressRules).
+*/}}
+{{- $ns := include "calc.namespace" . }}
+{{- $_ := required "network.vpcCidr is required" .Values.network.vpcCidr }}
+{{- $_ := required "network.databaseCidrs is required (CIDRs of the private subnets of the proxy and the instance)" .Values.network.databaseCidrs }}
+{{- $egress := required "migrate needs a non-empty egress list" .Values.migrate.egress }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: migrate-network
+  namespace: {{ $ns }}
+  labels:
+    {{- include "calc.labels" (dict "root" . "name" "migrate-network" "component" "policy") | nindent 4 }}
+  # Helm ownership metadata: applied before the release (the migration Job needs it), so the release must be able to
+  # adopt it (kubectl apply of this template, then helm install).
+  annotations:
+    meta.helm.sh/release-name: {{ .Release.Name }}
+    meta.helm.sh/release-namespace: {{ .Release.Namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "calc.selectorLabels" (dict "root" . "name" "migrate") | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    {{- include "calc.egressRules" (dict "root" . "egress" $egress) | nindent 4 }}
