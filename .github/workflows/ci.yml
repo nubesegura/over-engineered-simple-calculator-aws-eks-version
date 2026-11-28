@@ -95,7 +95,7 @@ jobs:
         run: |
           ruff check --config src/scheduler/pyproject.toml src/scheduler scripts
           ruff format --config src/scheduler/pyproject.toml --check src/scheduler scripts
-          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/nat_window.py scripts/tests scripts/package_rotation.py
+          mypy --config-file src/scheduler/pyproject.toml scripts/cfn_deploy.py scripts/iac_owner_guard.py scripts/post_destroy_check.py scripts/run_deploy_build.py scripts/nat_window.py scripts/tests scripts/package_rotation.py scripts/diagrams/workflows/build.py
           (cd src/scheduler && mypy app.py)
 
   python-core:
