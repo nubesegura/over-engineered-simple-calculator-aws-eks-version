@@ -1,0 +1,5610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EKS version: GitHub Actions pipelines</title>
+<style>
+:root{--bg:#f3f2f1;--panel:#fff;--ink:#242424;--mute:#605e5c;--line:#c8c6c4;--wire:#8a8886;--blue:#0078d4;--ok:#107c10;--bad:#c50f1f;--wait:#9a5b00;--skip:#8a8886;--soft:#eaf3fb;--softbad:#fdecee}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#1b1a19;--panel:#292827;--ink:#f3f2f1;--mute:#b8b5b2;--line:#4a4846;--wire:#8a8886;--blue:#4fa9ee;--ok:#54b054;--bad:#f1707b;--wait:#f0a842;--skip:#979593;--soft:#12354f;--softbad:#4a2024}}
+:root[data-theme=dark]{--bg:#1b1a19;--panel:#292827;--ink:#f3f2f1;--mute:#b8b5b2;--line:#4a4846;--wire:#8a8886;--blue:#4fa9ee;--ok:#54b054;--bad:#f1707b;--wait:#f0a842;--skip:#979593;--soft:#12354f;--softbad:#4a2024}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 "Segoe UI",system-ui,sans-serif}
+button{font:inherit;color:inherit;cursor:pointer;background:none;border:1px solid var(--line);border-radius:3px;padding:4px 11px}
+button:hover{border-color:var(--blue)}:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+header{background:var(--panel);padding:13px 20px 0;border-bottom:1px solid var(--line)}
+h1{font-size:19px;font-weight:600;margin:0}.sub{color:var(--mute);margin:2px 0 8px}
+.views{display:flex;gap:4px;align-items:center}.views [role=tab]{border:0;border-bottom:2px solid transparent;border-radius:0;padding:7px 10px}
+.views [aria-selected=true]{border-color:var(--blue);font-weight:600}.views .sp{flex:1}
+main{display:grid;grid-template-columns:270px minmax(0,1fr);min-height:80vh}
+nav{background:var(--panel);border-right:1px solid var(--line);padding:10px}
+nav h2{font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--mute);margin:12px 6px 4px}
+nav button{display:block;width:100%;text-align:left;border:0;padding:6px 8px;border-left:3px solid transparent}
+nav button[aria-current=true]{background:var(--soft);border-left-color:var(--blue);font-weight:600}
+section{padding:14px 18px;min-width:0}
+.desc{max-width:105ch;margin:2px 0 10px}h3{margin:0;font-size:17px}
+.ctl{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:8px}.ctl .pos{color:var(--mute);margin-left:6px}
+.cap{background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--blue);padding:8px 12px;margin-bottom:10px;min-height:56px}
+.cap b{display:block}
+.view{overflow:auto;border:1px solid var(--line);background:var(--bg);max-height:76vh;overscroll-behavior:contain}
+.all .view{max-height:none}.sizer{position:relative}.canvas{position:absolute;left:0;top:0;transform-origin:0 0}
+.canvas svg{position:absolute;left:0;top:0}
+.zone{position:absolute;border:1px dashed var(--wire)}.zone>span{position:absolute;left:20px;top:14px;font-weight:600;font-size:15px}
+.frame{position:absolute;border:1px dashed var(--fc);border-radius:4px;background:color-mix(in srgb,var(--fc) 6%,transparent)}
+.frame>span{position:absolute;left:10px;top:3px;font-size:11.5px;color:var(--fc);font-weight:600;white-space:nowrap}
+.trig{position:absolute;background:var(--panel);border:1px solid var(--wire);border-radius:22px;overflow:hidden;box-shadow:0 2px 5px #0002}
+.trig .top{padding:16px 18px 11px;border-bottom:1px solid var(--line);background:color-mix(in srgb,var(--bg) 45%,var(--panel))}
+.trig .top b{font-size:15px;font-weight:600}.trig .low{padding:10px 18px;font-size:12.5px;overflow-wrap:anywhere}
+.trig .low i{font-style:normal;display:block;color:var(--mute);margin-top:6px;font-size:11.5px}
+.card{position:absolute;background:var(--panel);border:1px solid var(--wire);border-top:5px solid var(--st);box-shadow:0 2px 5px #0002;padding:0;text-align:left;border-radius:0;display:block;cursor:pointer;overflow:visible}
+.card .hd{height:101px;padding:7px 12px 0;border-bottom:1px solid var(--line)}
+.card .nm{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.card .stt{color:var(--st);display:block;font-size:12.5px;height:19px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chip{display:inline-block;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:color-mix(in srgb,var(--fc) 14%,var(--panel));border:1px solid var(--fc);color:var(--ink);font:600 12px/18px Consolas,monospace;padding:0 7px;border-radius:9px}
+.card .jb{display:block;color:var(--mute);font-size:11px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tk{display:flex;gap:6px;height:20px;line-height:20px;padding:0 10px;font-size:12px;white-space:nowrap}
+.tk span:last-child{overflow:hidden;text-overflow:ellipsis}.tk .ic{width:14px;flex:none;text-align:center;font-weight:700}
+.tk.ok .ic{color:var(--ok)}.tk.run{background:var(--soft)}.tk.run .ic{color:var(--blue)}.tk.bad{background:var(--softbad)}.tk.bad .ic{color:var(--bad)}.tk.skip{color:var(--skip)}.tk.skip span:last-child{text-decoration:line-through}
+.card.pending{--st:var(--line)}.card.ok{--st:var(--ok)}.card.run{--st:var(--blue);box-shadow:0 0 0 3px color-mix(in srgb,var(--blue) 35%,transparent)}.card.bad{--st:var(--bad)}.card.skip{--st:var(--skip);opacity:.72}.card.wait{--st:var(--wait)}
+.card.pending .stt{color:var(--mute)}
+.gate{position:absolute;left:-26px;top:38px;width:30px;height:30px;border-radius:50%;background:var(--panel);border:2px solid var(--wait);display:grid;place-items:center}
+.gate svg{position:static;width:17px;height:17px}
+.wire{fill:none;stroke:var(--wire);stroke-width:1.6}.wire.run{stroke:var(--blue);stroke-width:2.6;stroke-dasharray:7 5;animation:m .6s linear infinite}.wire.ok{stroke:var(--ok);stroke-width:2}.wire.off{stroke-dasharray:3 4;opacity:.6}
+@keyframes m{to{stroke-dashoffset:-12}}
+@media (prefers-reduced-motion:reduce){.wire.run{animation:none}}
+aside{background:var(--panel);border:1px solid var(--line);margin-top:10px;padding:12px 14px;overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}th,td{text-align:left;vertical-align:top;padding:5px 8px;border-bottom:1px solid var(--line)}th{color:var(--mute);font-weight:600}
+code{font:12px Consolas,monospace;overflow-wrap:anywhere}
+details{background:var(--panel);border:1px solid var(--line);margin-bottom:8px;padding:8px 12px;overflow-x:auto}summary{cursor:pointer}
+.lg{display:flex;gap:14px;flex-wrap:wrap;color:var(--mute);font-size:12px;margin:8px 0}.lg b{font-weight:700}
+.allitem{margin-bottom:26px}
+.mute{color:var(--mute)}
+@media (max-width:800px){main{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line);max-height:34vh;overflow:auto}section{padding:12px 16px}}
+@media print{nav,.ctl,.views{display:none}main{display:block}.view{max-height:none;overflow:visible}}
+</style>
+</head>
+<body>
+<header><h1 id="h"></h1><div class="sub" id="sub"></div><div class="views" role="tablist" id="views"></div></header>
+<main><nav id="nav" aria-label="Scenarios"></nav><section id="sec"></section></main>
+<script>
+const DATA = {
+ "title": "EKS version: GitHub Actions pipelines",
+ "subtitle": "Six workflows: CI, Deploy DEV, Deploy PROD, the reusable deployment, Destroy DEV and Keep NAT",
+ "asOf": "2026-11-28",
+ "source": ".github/workflows/*.yml and scripts/ (working tree, develop)",
+ "files": {
+  "ci.yml": {
+   "role": "Quality gates: templates, scripts, backend, chart and image. It never touches AWS.",
+   "triggers": [
+    "every pull request",
+    "push to any branch or tag (no paths filter)",
+    "called by deploy-dev.yml and deploy-prod.yml"
+   ],
+   "calls": []
+  },
+  "deploy-dev.yml": {
+   "role": "Entry point of dev: runs CI, then the deployment.",
+   "triggers": [
+    "manual (input ignore_nat_window); no push trigger on purpose"
+   ],
+   "calls": [
+    "ci.yml",
+    "deploy.yml"
+   ]
+  },
+  "deploy-prod.yml": {
+   "role": "Entry point of prod: CI, a dry-run plan, then the real deployment. Only from main.",
+   "triggers": [
+    "push to main",
+    "manual, effective from main only"
+   ],
+   "calls": [
+    "ci.yml",
+    "deploy.yml"
+   ]
+  },
+  "deploy.yml": {
+   "role": "The reusable deployment for dev and prod (one job).",
+   "triggers": [
+    "called by deploy-dev.yml (once) and deploy-prod.yml (dry run, then real)"
+   ],
+   "calls": []
+  },
+  "destroy-dev.yml": {
+   "role": "Manual teardown of dev: plan by default, typed confirmation to destroy. prod has no destroy workflow.",
+   "triggers": [
+    "manual (inputs mode, confirm), from develop only"
+   ],
+   "calls": []
+  },
+  "keep-nat.yml": {
+   "role": "Keeps the dev NAT gateway up past 22:00 Panama, or restores the schedule.",
+   "triggers": [
+    "manual (input keep)"
+   ],
+   "calls": []
+  }
+ },
+ "stages": {
+  "ci_iac": {
+   "file": "ci.yml",
+   "job": "iac",
+   "name": "IaC and scripts",
+   "meta": "ubuntu-latest, 15 min, Python 3.14; concurrency ci-<workflow>-<ref>, a newer run cancels the older",
+   "summary": "Checks every CloudFormation/SAM template, the deployment scripts and the two Lambda functions. No AWS access.",
+   "tasks": [
+    {
+     "t": "Check out, set up Python",
+     "do": "Gets the code and Python 3.14 with the pip cache.",
+     "steps": [
+      "Checkout Repository",
+      "Setup Python"
+     ],
+     "lines": [
+      33,
+      36
+     ]
+    },
+    {
+     "t": "Install pinned tools",
+     "do": "Installs the dev requirements, cfn-lint, SAM CLI, helm (SHA-256 checked) and shellcheck.",
+     "steps": [
+      "Install tooling (pinned)",
+      "Install helm (pinned, checksum verified) and shellcheck"
+     ],
+     "lines": [
+      43,
+      48
+     ]
+    },
+    {
+     "t": "Run shellcheck",
+     "do": "Lints every scripts/*.sh; any finding fails the job.",
+     "steps": [
+      "Shellcheck (deployment scripts)"
+     ],
+     "lines": [
+      59
+     ]
+    },
+    {
+     "t": "Run cfn-lint",
+     "do": "Checks every templates/*.yaml against the us-east-2 resource rules.",
+     "steps": [
+      "cfn-lint (every template)"
+     ],
+     "lines": [
+      62
+     ]
+    },
+    {
+     "t": "Run sam validate",
+     "do": "Runs sam validate --lint on every template, with the dev and then the prod configuration.",
+     "steps": [
+      "SAM validate (lint), dev and prod"
+     ],
+     "lines": [
+      65
+     ]
+    },
+    {
+     "t": "Test scripts and templates",
+     "do": "Runs pytest in scripts/tests: deploy driver, guards, parameters and template rules.",
+     "steps": [
+      "Deployment scripts and template tests"
+     ],
+     "lines": [
+      74
+     ]
+    },
+    {
+     "t": "Test NAT scheduler",
+     "do": "Runs pytest in src/scheduler; coverage under 85 percent fails.",
+     "steps": [
+      "NAT scheduler tests (coverage at least 85 percent)"
+     ],
+     "lines": [
+      77
+     ]
+    },
+    {
+     "t": "Test rotation function",
+     "do": "Installs its requirements and runs pytest in src/rotation; coverage under 85 percent fails.",
+     "steps": [
+      "Rotation function tests (coverage at least 85 percent)"
+     ],
+     "lines": [
+      81
+     ]
+    },
+    {
+     "t": "Run ruff and mypy",
+     "do": "Lint, format check and types on the rotation function, then on the scheduler and the listed deployment scripts.",
+     "steps": [
+      "Ruff and mypy on the rotation function",
+      "Ruff and mypy on the scheduler and the deployment scripts"
+     ],
+     "lines": [
+      87,
+      94
+     ]
+    }
+   ]
+  },
+  "ci_core": {
+   "file": "ci.yml",
+   "job": "python-core",
+   "name": "Python core",
+   "meta": "ubuntu-latest, 20 min, PostgreSQL 17.11 service; concurrency ci-<workflow>-<ref>, a newer run cancels the older",
+   "summary": "Checks the backend code (src/backend/calculator_core) with a real throwaway PostgreSQL.",
+   "tasks": [
+    {
+     "t": "Check out, set up Python",
+     "do": "Gets the code and Python 3.14; PostgreSQL is already healthy on port 5432.",
+     "steps": [
+      "Checkout Repository",
+      "Setup Python"
+     ],
+     "lines": [
+      127,
+      130
+     ]
+    },
+    {
+     "t": "Install dependencies",
+     "do": "Installs the pinned dev requirements.",
+     "steps": [
+      "Install dependencies (pinned)"
+     ],
+     "lines": [
+      137
+     ]
+    },
+    {
+     "t": "Run ruff",
+     "do": "Lint and format check.",
+     "steps": [
+      "Ruff (lint and format)"
+     ],
+     "lines": [
+      140
+     ]
+    },
+    {
+     "t": "Run mypy strict",
+     "do": "Strict type check.",
+     "steps": [
+      "Mypy (strict)"
+     ],
+     "lines": [
+      145
+     ]
+    },
+    {
+     "t": "Check layering",
+     "do": "lint-imports fails when a layer imports one it must not.",
+     "steps": [
+      "Layering (import-linter)"
+     ],
+     "lines": [
+      148
+     ]
+    },
+    {
+     "t": "Run tests",
+     "do": "Runs pytest against PostgreSQL; coverage under 85 percent fails.",
+     "steps": [
+      "Tests (coverage at least 85 percent, PostgreSQL service)"
+     ],
+     "lines": [
+      151
+     ]
+    },
+    {
+     "t": "Refuse skipped database tests",
+     "do": "Runs only the postgres tests again; fails if any was skipped or none passed.",
+     "steps": [
+      "Fail if the PostgreSQL tests were skipped"
+     ],
+     "lines": [
+      156
+     ]
+    },
+    {
+     "t": "Run pip check",
+     "do": "Fails on conflicting dependencies.",
+     "steps": [
+      "Consistent dependencies (pip check)"
+     ],
+     "lines": [
+      166
+     ]
+    },
+    {
+     "t": "Run pip-audit",
+     "do": "Fails on any known vulnerability of the runtime requirements, whatever its severity.",
+     "steps": [
+      "Audit runtime dependencies (pip-audit)"
+     ],
+     "lines": [
+      172
+     ]
+    }
+   ]
+  },
+  "ci_chart": {
+   "file": "ci.yml",
+   "job": "chart",
+   "name": "Helm chart",
+   "meta": "ubuntu-latest, 15 min; concurrency ci-<workflow>-<ref>, a newer run cancels the older",
+   "summary": "Lints and render-tests the application chart with placeholder values.",
+   "tasks": [
+    {
+     "t": "Check out, set up Python",
+     "do": "Gets the code and Python 3.14.",
+     "steps": [
+      "Checkout Repository",
+      "Setup Python"
+     ],
+     "lines": [
+      182,
+      185
+     ]
+    },
+    {
+     "t": "Install test tools",
+     "do": "Installs scripts/requirements-dev.txt.",
+     "steps": [
+      "Install tooling (pinned)"
+     ],
+     "lines": [
+      192
+     ]
+    },
+    {
+     "t": "Install helm",
+     "do": "Downloads helm v3.22.0 and checks its SHA-256.",
+     "steps": [
+      "Install helm (pinned, checksum verified)"
+     ],
+     "lines": [
+      195
+     ]
+    },
+    {
+     "t": "Lint chart",
+     "do": "helm lint with values-dev and values-prod; prod also gets a placeholder web ACL.",
+     "steps": [
+      "Helm lint (dev and prod)"
+     ],
+     "lines": [
+      205
+     ]
+    },
+    {
+     "t": "Run chart tests",
+     "do": "Runs pytest in chart/tests; a skipped test also fails the job.",
+     "steps": [
+      "Chart tests (helm on PATH, none skipped)"
+     ],
+     "lines": [
+      229
+     ]
+    },
+    {
+     "t": "Run ruff and mypy",
+     "do": "Lint, format and types on the chart tests.",
+     "steps": [
+      "Ruff and mypy on the chart tests"
+     ],
+     "lines": [
+      238
+     ]
+    }
+   ]
+  },
+  "ci_image": {
+   "file": "ci.yml",
+   "job": "image",
+   "name": "Container image",
+   "meta": "ubuntu-latest, 20 min, needs python-core; linux/arm64 under QEMU; concurrency ci-<workflow>-<ref>, a newer run cancels the older",
+   "summary": "Builds the image and runs it on the runner. Nothing is pushed to a registry.",
+   "tasks": [
+    {
+     "t": "Check out code",
+     "do": "Gets the code.",
+     "steps": [
+      "Checkout Repository"
+     ],
+     "lines": [
+      254
+     ]
+    },
+    {
+     "t": "Look for the Dockerfile",
+     "do": "Sets present=true or false; without src/backend/Dockerfile the rest is skipped with a notice.",
+     "steps": [
+      "Check that the Dockerfile exists"
+     ],
+     "lines": [
+      257
+     ]
+    },
+    {
+     "t": "Set up QEMU and Buildx",
+     "do": "Lets the x86 runner build and run arm64 images.",
+     "steps": [
+      "Set up QEMU (arm64)",
+      "Set up Docker Buildx"
+     ],
+     "if": "the Dockerfile exists",
+     "lines": [
+      267,
+      273
+     ]
+    },
+    {
+     "t": "Build image",
+     "do": "docker buildx build --load; the CA trust bundle is built by src/rotation/package_bundle.py.",
+     "steps": [
+      "Build the image"
+     ],
+     "if": "the Dockerfile exists",
+     "lines": [
+      280
+     ]
+    },
+    {
+     "t": "Check non-root user",
+     "do": "Runs id in the image; it must be uid 10001 and gid 10001.",
+     "steps": [
+      "The image runs as uid 10001 and gid 10001 (non-root)"
+     ],
+     "if": "the Dockerfile exists",
+     "lines": [
+      285
+     ]
+    },
+    {
+     "t": "Check dispatcher",
+     "do": "An unknown command must exit 2 with the usage; ingest without settings must exit 1 and name the problem.",
+     "steps": [
+      "The dispatcher refuses unknown commands and an unconfigured worker"
+     ],
+     "if": "the Dockerfile exists",
+     "lines": [
+      296
+     ]
+    },
+    {
+     "t": "Check /health",
+     "do": "Starts the add service with a read-only filesystem; /health must answer 200 within about 60 seconds.",
+     "steps": [
+      "The service starts and answers /health"
+     ],
+     "if": "the Dockerfile exists",
+     "lines": [
+      312
+     ]
+    },
+    {
+     "t": "Stop container",
+     "do": "Removes the container, also after a failure.",
+     "steps": [
+      "Stop the container"
+     ],
+     "if": "always, when the Dockerfile exists",
+     "always": true,
+     "lines": [
+      328
+     ]
+    }
+   ]
+  },
+  "d_guard": {
+   "file": "deploy.yml",
+   "job": "deploy",
+   "name": "Guards and login",
+   "meta": "ubuntu-latest, 120 min, environment: dev|prod, inputs: ignore_nat_window, dry_run",
+   "summary": "Stops before any change when the branch, configuration, account, hour or owner is wrong.",
+   "tasks": [
+    {
+     "t": "Check environment and branch",
+     "do": "Accepts dev (any branch) or prod from main only.",
+     "steps": [
+      "Refuse unsupported environments and prod outside main"
+     ],
+     "lines": [
+      61
+     ]
+    },
+    {
+     "t": "Check out code",
+     "do": "Gets the code.",
+     "steps": [
+      "Checkout Repository"
+     ],
+     "lines": [
+      80
+     ]
+    },
+    {
+     "t": "Check configuration",
+     "do": "Needs AWS_REGION, the two Cognito variables, WebOrigin in parameters/<env>.json, the 3 secrets, and WAF_ACL_ARN in prod.",
+     "steps": [
+      "Validate environment configuration"
+     ],
+     "lines": [
+      84
+     ]
+    },
+    {
+     "t": "Set up Python and tools",
+     "do": "Python 3.14, dev requirements, cfn-lint and SAM CLI.",
+     "steps": [
+      "Setup Python",
+      "Install tooling (pinned)"
+     ],
+     "lines": [
+      111,
+      118
+     ]
+    },
+    {
+     "t": "Log in to AWS (OIDC)",
+     "do": "Assumes the deployment role of the environment; no stored keys.",
+     "steps": [
+      "Configure AWS Credentials"
+     ],
+     "lines": [
+      123
+     ]
+    },
+    {
+     "t": "Check AWS account",
+     "do": "Compares the caller account with the secret AWS_ACCOUNT_ID; a difference stops the run.",
+     "steps": [
+      "Verify target AWS account"
+     ],
+     "lines": [
+      131
+     ]
+    },
+    {
+     "t": "Check NAT hours",
+     "do": "nat_window.py: dev may start 08:00-20:30 Panama, or any time with keep-up true or ignore_nat_window. prod always passes.",
+     "steps": [
+      "NAT window preflight"
+     ],
+     "lines": [
+      143
+     ]
+    },
+    {
+     "t": "Check IaC owner",
+     "do": "iac_owner_guard.py: stops unless free or owned by CloudFormation; unreadable also stops. No Terraform state is configured today.",
+     "steps": [
+      "Owner guard (CloudFormation only)"
+     ],
+     "lines": [
+      151
+     ]
+    },
+    {
+     "t": "Package rotation function",
+     "do": "Builds .build/rotation/db-rotation.zip with the CA bundle.",
+     "steps": [
+      "Package the rotation function"
+     ],
+     "lines": [
+      154
+     ]
+    }
+   ]
+  },
+  "d_stacks": {
+   "file": "deploy.yml",
+   "job": "deploy",
+   "name": "Stacks and add-ons",
+   "meta": "ubuntu-latest, 120 min, environment: dev|prod, inputs: ignore_nat_window, dry_run",
+   "summary": "Plan mode checks change sets and executes nothing; real mode deploys security through storage, then the cluster add-ons.",
+   "tasks": [
+    {
+     "t": "Check Kubernetes version",
+     "do": "eks_latest_version.py fails unless KubernetesVersion is the newest in standard support.",
+     "steps": [
+      "Check the Kubernetes version (plan only)"
+     ],
+     "if": "dry run only",
+     "lines": [
+      159
+     ]
+    },
+    {
+     "t": "Dry-run change sets",
+     "do": "Creates each change set, applies the removal/replacement guard and deletes it again. The alarms stack is not included.",
+     "steps": [
+      "Dry run of the stacks, change sets without executing (plan only)"
+     ],
+     "if": "dry run only",
+     "lines": [
+      163
+     ]
+    },
+    {
+     "t": "Deploy stacks",
+     "do": "security, network, registry, scheduler*, database, rotation, cluster, deploy, bastion*, storage (*dev only). Guard before each execute; locks the default security group; dev turns the NAT up; prod sets termination protection.",
+     "steps": [
+      "Deploy the stacks (security through storage)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      170
+     ]
+    },
+    {
+     "t": "Install cluster add-ons",
+     "do": "CodeBuild runs helm_addons.sh: load balancer controller, operator RBAC, Cluster Autoscaler (chart SHA-256 checked). prod stops on an unaccepted autoscaler version skew.",
+     "steps": [
+      "Install the cluster add-ons (CodeBuild, command addons)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      178
+     ]
+    }
+   ]
+  },
+  "d_image": {
+   "file": "deploy.yml",
+   "job": "deploy",
+   "name": "Image",
+   "meta": "ubuntu-latest, 120 min, environment: dev|prod, inputs: ignore_nat_window, dry_run",
+   "summary": "Builds the arm64 image and pushes it with an immutable tag. All steps run only in a real deployment.",
+   "tasks": [
+    {
+     "t": "Set up QEMU and Buildx",
+     "do": "Lets the x86 runner build arm64.",
+     "steps": [
+      "Set up QEMU (arm64)",
+      "Set up Docker Buildx"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      184,
+      190
+     ]
+    },
+    {
+     "t": "Log in to ECR",
+     "do": "Reads the repository from the registry stack, sets the tag <commit>-<run id> and logs docker in.",
+     "steps": [
+      "Log in to the image registry (ECR)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      194
+     ]
+    },
+    {
+     "t": "Build and push image",
+     "do": "Pushes the image and fails unless the ECR digest equals the build digest.",
+     "steps": [
+      "Build and push the image (immutable tag, digest)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      210
+     ]
+    }
+   ]
+  },
+  "d_release": {
+   "file": "deploy.yml",
+   "job": "deploy",
+   "name": "Release and alarms",
+   "meta": "ubuntu-latest, 120 min, environment: dev|prod, inputs: ignore_nat_window, dry_run",
+   "summary": "Migrates the database, upgrades the Helm release by digest, then deploys the alarms. There is no smoke test against the deployed API.",
+   "tasks": [
+    {
+     "t": "Apply migration policy and Job",
+     "do": "CodeBuild runs helm_deploy.sh: it renders and applies the namespace, the service accounts, the migration network policy (egress of the Job; the release adopts it) and the migrate Job, then waits up to 16 minutes for the Job.",
+     "steps": [
+      "Deploy the release (CodeBuild, command deploy)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      228
+     ]
+    },
+    {
+     "t": "Upgrade release, wait rollouts",
+     "do": "Same build: helm upgrade --install --atomic --wait by image digest (10 min; a failure rolls back to the previous release), then waits for the rollout of every deployment.",
+     "steps": [
+      "Deploy the release (CodeBuild, command deploy)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      228
+     ]
+    },
+    {
+     "t": "Publish API registration",
+     "do": "Same build: waits up to 5 minutes for the load balancer address, then writes and tags the dns-name and hosted-zone-id parameters of the shared edge in SSM.",
+     "steps": [
+      "Deploy the release (CodeBuild, command deploy)"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      228
+     ]
+    },
+    {
+     "t": "Find alarm targets",
+     "do": "Finds the node group, load balancer and target groups by tag, enables the group metric and builds the weekly reminder text.",
+     "steps": [
+      "Discover the alarm dimensions and build the reminder"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      252
+     ]
+    },
+    {
+     "t": "Deploy alarms stack",
+     "do": "cfn_deploy.py --only alarms, with the same change set guard.",
+     "steps": [
+      "Deploy the alarms stack"
+     ],
+     "if": "not a dry run",
+     "lines": [
+      260
+     ]
+    },
+    {
+     "t": "Write next steps",
+     "do": "Summary: confirm the SNS e-mail; in dev also run Deploy DEV in shared-resources.",
+     "steps": [
+      "Deployment summary"
+     ],
+     "if": "success and not a dry run",
+     "lines": [
+      264
+     ]
+    }
+   ]
+  },
+  "x_guard": {
+   "file": "destroy-dev.yml",
+   "job": "destroy",
+   "name": "Guards and owner",
+   "meta": "ubuntu-latest, 120 min, environment: dev, concurrency deploy-dev (shared with Deploy DEV)",
+   "summary": "Checks the branch, the typed name, the account and what owns dev. Nothing is changed.",
+   "tasks": [
+    {
+     "t": "Check out code",
+     "do": "Gets the code.",
+     "steps": [
+      "Checkout Repository"
+     ],
+     "lines": [
+      53
+     ]
+    },
+    {
+     "t": "Check branch and confirm text",
+     "do": "Only from develop; mode destroy needs the repository name typed in confirm.",
+     "steps": [
+      "Validate the request"
+     ],
+     "lines": [
+      56
+     ]
+    },
+    {
+     "t": "Check configuration",
+     "do": "Needs AWS_REGION and the secrets ROLE_ARN and AWS_ACCOUNT_ID.",
+     "steps": [
+      "Validate environment configuration"
+     ],
+     "lines": [
+      72
+     ]
+    },
+    {
+     "t": "Set up Python",
+     "do": "Python 3.14.",
+     "steps": [
+      "Setup Python"
+     ],
+     "lines": [
+      86
+     ]
+    },
+    {
+     "t": "Log in to AWS (OIDC)",
+     "do": "Assumes the dev deployment role.",
+     "steps": [
+      "Configure AWS Credentials"
+     ],
+     "lines": [
+      91
+     ]
+    },
+    {
+     "t": "Check AWS account",
+     "do": "A different account stops the run.",
+     "steps": [
+      "Verify target AWS account"
+     ],
+     "lines": [
+      98
+     ]
+    },
+    {
+     "t": "Detect owner",
+     "do": "iac_owner_guard.py detect: cloudformation or none; both or unreadable fails closed.",
+     "steps": [
+      "Detect the deployed owner"
+     ],
+     "lines": [
+      110
+     ]
+    },
+    {
+     "t": "Report owner",
+     "do": "Prints owner and IAC_TOOL (information only); owner terraform would stop here, but no Terraform state is configured today.",
+     "steps": [
+      "Owner and IAC_TOOL"
+     ],
+     "lines": [
+      116
+     ]
+    },
+    {
+     "t": "Report nothing deployed",
+     "do": "Writes that dev is empty in the summary.",
+     "steps": [
+      "Nothing is deployed"
+     ],
+     "if": "owner is none",
+     "lines": [
+      128
+     ]
+    }
+   ]
+  },
+  "x_run": {
+   "file": "destroy-dev.yml",
+   "job": "destroy",
+   "name": "Plan and destroy",
+   "meta": "ubuntu-latest, 120 min, environment: dev, concurrency deploy-dev (shared with Deploy DEV)",
+   "summary": "Always lists what would go; removes it only in mode destroy, then checks for leftovers.",
+   "tasks": [
+    {
+     "t": "Plan destruction",
+     "do": "Lists each stack in reverse order: resources, what is retained, what blocks a delete. Read-only.",
+     "steps": [
+      "Plan the destruction (CloudFormation)"
+     ],
+     "if": "dev is owned by CloudFormation",
+     "lines": [
+      136
+     ]
+    },
+    {
+     "t": "Destroy",
+     "do": "NAT up, CodeBuild helm_uninstall.sh, wait (20 min) for the load balancer to go, remove the SSM registration, then per stack: protection off, empty buckets/ECR, delete, wait. Last: RDS Proxy log group.",
+     "steps": [
+      "Destroy (CloudFormation)"
+     ],
+     "if": "mode is destroy and dev is owned by CloudFormation",
+     "lines": [
+      143
+     ]
+    },
+    {
+     "t": "Write closing notice",
+     "do": "Reminds to run Deploy DEV in shared-resources and set API_WEIGHT_EKS to 0.",
+     "steps": [
+      "Closing notice for the owner"
+     ],
+     "if": "mode is destroy and dev is owned by CloudFormation",
+     "lines": [
+      149
+     ]
+    },
+    {
+     "t": "Check for leftovers",
+     "do": "post_destroy_check.py: up to 4 passes, 60 s apart; fails if anything unexpected is left.",
+     "steps": [
+      "Verify nothing is left behind"
+     ],
+     "if": "mode is destroy",
+     "lines": [
+      162
+     ]
+    }
+   ]
+  },
+  "k_nat": {
+   "file": "keep-nat.yml",
+   "job": "keep-nat",
+   "name": "Keep NAT (dev)",
+   "meta": "ubuntu-latest, 10 min, environment: dev, concurrency keep-nat-dev",
+   "summary": "Writes one SSM parameter that the NAT scheduler reads before the 22:00 shutdown.",
+   "tasks": [
+    {
+     "t": "Check configuration",
+     "do": "Needs AWS_REGION and the secrets ROLE_ARN and AWS_ACCOUNT_ID.",
+     "steps": [
+      "Validate environment configuration"
+     ],
+     "lines": [
+      33
+     ]
+    },
+    {
+     "t": "Log in to AWS (OIDC)",
+     "do": "Assumes the dev deployment role.",
+     "steps": [
+      "Configure AWS Credentials"
+     ],
+     "lines": [
+      47
+     ]
+    },
+    {
+     "t": "Check AWS account",
+     "do": "A different account stops the run.",
+     "steps": [
+      "Verify target AWS account"
+     ],
+     "lines": [
+      55
+     ]
+    },
+    {
+     "t": "Write keep-up setting",
+     "do": "put-parameter --overwrite sets /oecalc/dev/eks/nat-keep-up to true or false and writes the message in the summary. It does not check first that the parameter exists.",
+     "steps": [
+      "Write the keep-up setting"
+     ],
+     "lines": [
+      66
+     ]
+    }
+   ]
+  }
+ },
+ "scenarios": [
+  {
+   "id": "ci-pr",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Pull request, all green",
+   "desc": "Any pull request, including the weekly grouped Dependabot ones. A branch pushed in this repository also starts the push run, so CI runs twice.",
+   "result": "All gates green. Nothing is deployed.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ci-push",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Push to any branch or tag, green",
+   "desc": "Any push, also to develop and also docs-only changes: there is no paths filter. A push to develop does not deploy; a push to main also starts Deploy PROD, which runs CI again.",
+   "result": "All gates green. Nothing is deployed by this workflow.",
+   "trigger": {
+    "type": "push",
+    "title": "Push",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ci-iac",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Bad template: IaC gate fails",
+   "desc": "A template breaks a cfn-lint rule.",
+   "result": "The CI run is red; the other jobs still finish.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 3,
+     "note": "cfn-lint rejects a template; the later tasks of this job do not run."
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ci-scr",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Script tests fail",
+   "desc": "A deployment script, guard or template rule test fails in scripts/tests.",
+   "result": "The CI run is red; the other jobs still finish.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 5,
+     "note": "pytest fails in scripts/tests."
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ci-core",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Backend tests fail",
+   "desc": "A backend test fails or coverage drops under 85 percent.",
+   "result": "Red; the image is not built.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 5,
+     "note": "pytest fails, so the image job is skipped."
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Skipped: it needs python-core."
+    }
+   ]
+  },
+  {
+   "id": "ci-pg",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Database tests were skipped",
+   "desc": "The PostgreSQL service or TEST_DATABASE_URL does not work, so the database tests skip themselves.",
+   "result": "Red on purpose: a hidden skip counts as a failure. No image.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 6,
+     "note": "A skipped PostgreSQL test fails the job."
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Skipped: it needs python-core."
+    }
+   ]
+  },
+  {
+   "id": "ci-audit",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Vulnerable dependency found",
+   "desc": "pip-audit finds a known vulnerability in a runtime requirement.",
+   "result": "Red until the owner updates or reviews it. No image.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 8,
+     "note": "pip-audit fails on any finding."
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Skipped: it needs python-core."
+    }
+   ]
+  },
+  {
+   "id": "ci-chart",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Chart gate fails",
+   "desc": "helm lint or a chart test fails, or the chart tests were skipped.",
+   "result": "Red; the other jobs still finish.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml",
+     "outcome": "failed",
+     "failAt": 4,
+     "note": "A chart test fails or is skipped."
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ]
+    }
+   ]
+  },
+  {
+   "id": "ci-health",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Image does not answer /health",
+   "desc": "The image builds but the service does not start.",
+   "result": "Red; the container is still removed.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "failed",
+     "failAt": 6,
+     "note": "/health never answers 200: logs are printed and the job fails; the container is removed anyway."
+    }
+   ]
+  },
+  {
+   "id": "ci-root",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Image runs as the wrong user",
+   "desc": "The image does not use uid and gid 10001.",
+   "result": "Red; nothing was pushed.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "failed",
+     "failAt": 4,
+     "note": "The user check fails; the later checks do not run."
+    }
+   ]
+  },
+  {
+   "id": "ci-nodocker",
+   "group": "Pull requests and pushes (CI)",
+   "title": "No Dockerfile in the branch",
+   "desc": "A branch without src/backend/Dockerfile.",
+   "result": "Green: the image checks are skipped with a notice.",
+   "trigger": {
+    "type": "pr",
+    "title": "Pull request",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "skip": [
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+     ],
+     "note": "The Dockerfile is missing: a notice and every image check skipped."
+    }
+   ]
+  },
+  {
+   "id": "ci-cancel",
+   "group": "Pull requests and pushes (CI)",
+   "title": "Newer push cancels this run",
+   "desc": "A second push to the same ref arrives while CI runs.",
+   "result": "Cancelled; the newer run gives the verdict.",
+   "trigger": {
+    "type": "push",
+    "title": "Push",
+    "ref": "any branch",
+    "inputs": [],
+    "entry": "ci.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "ci.yml",
+     "outcome": "canceled",
+     "note": "Cancelled: a newer run of the same workflow and ref replaced this one.",
+     "skip": [
+      5,
+      6,
+      7,
+      8
+     ],
+     "name": "Python core (cancelled)"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "ci.yml",
+     "outcome": "canceled",
+     "note": "Cancelled: a newer run of the same workflow and ref replaced this one.",
+     "skip": [
+      4,
+      5,
+      6,
+      7,
+      8
+     ],
+     "name": "IaC, scripts (cancelled)"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "ci.yml",
+     "outcome": "canceled",
+     "note": "Cancelled: a newer run of the same workflow and ref replaced this one.",
+     "skip": [
+      3,
+      4,
+      5
+     ],
+     "name": "Helm chart (cancelled)"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Never starts: the run was cancelled."
+    }
+   ]
+  },
+  {
+   "id": "dev-ok",
+   "group": "Deploy DEV",
+   "title": "Deploy DEV, all green",
+   "desc": "Started by hand between 08:00 and 20:30 Panama. No approvers exist. Waits while another deploy or a destroy of dev runs (concurrency deploy-dev). No branch check: the chosen branch is what gets deployed.",
+   "result": "dev deployed and registered in SSM. Next by hand: confirm the SNS e-mail, run Deploy DEV in shared-resources. NAT goes down at 22:00.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    }
+   ]
+  },
+  {
+   "id": "dev-ignore",
+   "group": "Deploy DEV",
+   "title": "Outside the NAT hours, ignored",
+   "desc": "Started outside 08:00-20:30 with ignore_nat_window = true.",
+   "result": "Deploys. The scheduler unit turns the NAT up during the run; a 22:00 shutdown in the middle can break the cluster or release part.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = true"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Outside the window, but the flag is true: the preflight passes."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    }
+   ]
+  },
+  {
+   "id": "dev-keep",
+   "group": "Deploy DEV",
+   "title": "Outside the NAT hours, NAT kept up",
+   "desc": "Started outside 08:00-20:30 after Keep NAT = true.",
+   "result": "Deploys; the NAT stays up until Keep NAT = false.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Outside the window, but nat-keep-up reads true: the preflight passes."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    }
+   ]
+  },
+  {
+   "id": "dev-window",
+   "group": "Deploy DEV",
+   "title": "Outside the NAT hours: refused",
+   "desc": "Started outside 08:00-20:30 without the flag or keep-up (an unreadable parameter counts as false).",
+   "result": "Red, nothing changed. Wait, run Keep NAT, or use ignore_nat_window.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "nat_window.py refuses before the owner check and before any change.",
+     "outcome": "failed",
+     "failAt": 6
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-ci",
+   "group": "Deploy DEV",
+   "title": "CI is red: no deployment",
+   "desc": "A gate fails on the chosen branch.",
+   "result": "Red; the deploy job is skipped; AWS is never reached.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "outcome": "failed",
+     "failAt": 5,
+     "note": "pytest fails."
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Skipped: it needs python-core."
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-conf",
+   "group": "Deploy DEV",
+   "title": "Missing variable or secret",
+   "desc": "A value is missing in the dev GitHub environment, or WebOrigin is empty.",
+   "result": "Red before the AWS login; every missing name is listed.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "The missing names are printed and the job stops before AWS.",
+     "outcome": "failed",
+     "failAt": 2
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-acct",
+   "group": "Deploy DEV",
+   "title": "Wrong AWS account",
+   "desc": "The role belongs to another account than the secret says.",
+   "result": "Red, nothing changed.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "The caller account differs from AWS_ACCOUNT_ID.",
+     "outcome": "failed",
+     "failAt": 5
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-owner",
+   "group": "Deploy DEV",
+   "title": "Owner cannot be read",
+   "desc": "describe-stacks fails (permission, network) so the owner is unknown.",
+   "result": "Red (fails closed), nothing changed.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "The owner guard exits 4: unreadable means stop.",
+     "outcome": "failed",
+     "failAt": 7
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-cs",
+   "group": "Deploy DEV",
+   "title": "Change set would remove or replace",
+   "desc": "A template change removes or replaces a resource that is not on the unit's allow list.",
+   "result": "Red. Earlier stacks stay deployed; this change set is left for review, not executed.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ],
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "The guard refuses the change set; later stacks, image and release do not run."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-stack",
+   "group": "Deploy DEV",
+   "title": "A stack fails",
+   "desc": "CloudFormation fails while executing a change set.",
+   "result": "Red. CloudFormation rolls that stack back; earlier stacks stay. The next run deletes a ROLLBACK_COMPLETE stack and creates it again; *_FAILED needs a manual look.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ],
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "The failed events are printed; no later stack runs."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-addons",
+   "group": "Deploy DEV",
+   "title": "Add-ons build fails",
+   "desc": "A chart checksum differs, the NAT is down, or a controller does not become ready.",
+   "result": "Red. Stacks stay; helm --atomic undoes the failing chart. Run Deploy DEV again.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ],
+     "outcome": "failed",
+     "failAt": 3,
+     "note": "The CodeBuild build fails; its last 60 log lines are in the summary."
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-img",
+   "group": "Deploy DEV",
+   "title": "Image push or digest fails",
+   "desc": "The build or push fails, or ECR reports another digest.",
+   "result": "Red. The running release is untouched.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "No digest is exported, so no release starts."
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "dev-mig",
+   "group": "Deploy DEV",
+   "title": "Database migration fails",
+   "desc": "The migrate Job fails or takes over 16 minutes (for example it cannot reach the database or AWS).",
+   "result": "Red. The previous release keeps serving; the new image stays in ECR. The migration is not reverted by this workflow.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 0,
+     "note": "The policy and the Job are applied, the Job fails: its logs are printed and the release is not touched."
+    }
+   ]
+  },
+  {
+   "id": "dev-helm",
+   "group": "Deploy DEV",
+   "title": "Rollout fails and rolls back",
+   "desc": "New pods do not become ready within 10 minutes.",
+   "result": "Red. helm --atomic restores the previous release. The migration already applied stays. The alarms are not updated.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "helm upgrade fails and rolls back; history, pods and events are printed."
+    }
+   ]
+  },
+  {
+   "id": "dev-alb",
+   "group": "Deploy DEV",
+   "title": "No load balancer address",
+   "desc": "The release is healthy but the Ingress has no address after 5 minutes.",
+   "result": "Red. The release stays installed (no rollback here); nothing is registered in SSM.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "The release is up, but the registration is not published."
+    }
+   ]
+  },
+  {
+   "id": "dev-disc",
+   "group": "Deploy DEV",
+   "title": "Alarm targets not found",
+   "desc": "The node group, load balancer or a target group is missing or duplicated by tag.",
+   "result": "Red. The application is live and registered; the alarms stack is not updated.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 3,
+     "note": "discover_targets.py stops; no rollback of the release."
+    }
+   ]
+  },
+  {
+   "id": "dev-alarm",
+   "group": "Deploy DEV",
+   "title": "Alarms stack fails",
+   "desc": "The alarms change set is refused by the guard or fails to execute.",
+   "result": "Red. The application is live; a failed execution is rolled back by CloudFormation.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy DEV",
+    "ref": "chosen branch",
+    "inputs": [
+     "ignore_nat_window = false"
+    ],
+    "entry": "deploy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-dev.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-dev.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "dguard"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "dstacks"
+     ],
+     "via": "deploy-dev.yml > deploy.yml"
+    },
+    {
+     "id": "drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "dimage"
+     ],
+     "via": "deploy-dev.yml > deploy.yml",
+     "outcome": "failed",
+     "failAt": 4,
+     "note": "Only the alarms stack is affected."
+    }
+   ]
+  },
+  {
+   "id": "prod-ok",
+   "group": "Deploy PROD",
+   "title": "Push to main, all green",
+   "desc": "A merge of develop into main. No approvers: the dry run and the guard are the safety. One run at a time (concurrency deploy-prod). CI also runs separately for the same push. Needs the autoscaler skew solved (see \"As configured today\"); prod was never deployed.",
+   "result": "prod deployed and registered. Stacks get termination protection.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image"
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms"
+    }
+   ]
+  },
+  {
+   "id": "prod-man",
+   "group": "Deploy PROD",
+   "title": "Manual run from main",
+   "desc": "Same path, started by hand from main.",
+   "result": "Same as a push to main.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy PROD",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image"
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms"
+    }
+   ]
+  },
+  {
+   "id": "prod-branch",
+   "group": "Deploy PROD",
+   "title": "Manual run from another branch",
+   "desc": "Started by hand from a branch that is not main.",
+   "result": "Nothing runs: every job is skipped by its condition. The run is not red.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Deploy PROD",
+    "ref": "not main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "outcome": "skipped",
+     "note": "Skipped: the ref is not main."
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml",
+     "outcome": "skipped",
+     "note": "Skipped: the ref is not main."
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml",
+     "outcome": "skipped",
+     "note": "Skipped: the ref is not main."
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "skipped",
+     "note": "Skipped: the ref is not main."
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-ci",
+   "group": "Deploy PROD",
+   "title": "CI is red: no plan",
+   "desc": "A gate fails on main.",
+   "result": "Red; plan and apply are skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ],
+     "outcome": "failed",
+     "failAt": 6,
+     "note": "/health fails."
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-conf",
+   "group": "Deploy PROD",
+   "title": "Missing prod configuration",
+   "desc": "For example WAF_ACL_ARN is not set in the prod environment.",
+   "result": "Red before the AWS login; apply is skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "The missing names are printed; nothing reaches AWS.",
+     "outcome": "failed",
+     "failAt": 2
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-acct",
+   "group": "Deploy PROD",
+   "title": "Wrong AWS account",
+   "desc": "The role points to another account.",
+   "result": "Red, nothing changed; apply is skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "The caller account differs from AWS_ACCOUNT_ID.",
+     "outcome": "failed",
+     "failAt": 5
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-owner",
+   "group": "Deploy PROD",
+   "title": "Owner cannot be read",
+   "desc": "describe-stacks fails, so the owner is unknown.",
+   "result": "Red (fails closed); apply is skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "The owner guard exits 4.",
+     "outcome": "failed",
+     "failAt": 7
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-k8s",
+   "group": "Deploy PROD",
+   "title": "Kubernetes version is not newest",
+   "desc": "AWS offers a newer version in standard support than parameters/prod.json.",
+   "result": "Red: update KubernetesVersion first. Nothing changed; apply is skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "eks_latest_version.py fails the plan.",
+     "outcome": "failed",
+     "failAt": 0
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-cs",
+   "group": "Deploy PROD",
+   "title": "Dry run: change set refused",
+   "desc": "A change set would remove or replace something, or a stack is in ROLLBACK_COMPLETE.",
+   "result": "Red. Nothing executed; apply is skipped.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "The dry run fails. On a first deployment, stacks that depend on one still to be created are only warned about.",
+     "outcome": "failed",
+     "failAt": 1
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Skipped.",
+     "outcome": "skipped"
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-skew",
+   "group": "Deploy PROD",
+   "title": "As configured today: autoscaler skew",
+   "desc": "Kubernetes 1.37, autoscaler v1.36.1 and AllowAutoscalerMinorSkew = false in parameters/prod.json. The plan does not check this.",
+   "result": "Red. The 8 prod stacks are already created; no add-ons, no application. Fix the parameter or the chart, then run again.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ],
+     "outcome": "failed",
+     "failAt": 3,
+     "note": "helm_addons.sh stops before installing anything in prod."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-stack",
+   "group": "Deploy PROD",
+   "title": "A stack fails in the real run",
+   "desc": "CloudFormation fails although the plan passed (the apply creates new change sets).",
+   "result": "Red. That stack rolls back; earlier ones stay.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ],
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "The failed events are printed; nothing later runs."
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image",
+     "outcome": "skipped",
+     "note": "Skipped."
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "skipped",
+     "note": "Skipped."
+    }
+   ]
+  },
+  {
+   "id": "prod-mig",
+   "group": "Deploy PROD",
+   "title": "Migration fails in prod",
+   "desc": "The migrate Job fails.",
+   "result": "Red. The previous release keeps serving; the stack changes stay.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image"
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "failed",
+     "failAt": 0,
+     "note": "The release is not touched."
+    }
+   ]
+  },
+  {
+   "id": "prod-helm",
+   "group": "Deploy PROD",
+   "title": "Rollout fails and rolls back",
+   "desc": "New pods are not ready within 10 minutes.",
+   "result": "Red. The previous release is restored; the migration and the stack changes stay.",
+   "trigger": {
+    "type": "push",
+    "title": "Push to main",
+    "ref": "main",
+    "inputs": [],
+    "entry": "deploy-prod.yml"
+   },
+   "stages": [
+    {
+     "id": "core",
+     "stage": "ci_core",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "iac",
+     "stage": "ci_iac",
+     "lane": 1,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "chart",
+     "stage": "ci_chart",
+     "lane": 2,
+     "via": "deploy-prod.yml > ci.yml"
+    },
+    {
+     "id": "image",
+     "stage": "ci_image",
+     "lane": 0,
+     "via": "deploy-prod.yml > ci.yml",
+     "after": [
+      "core"
+     ]
+    },
+    {
+     "id": "plan_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "iac",
+      "chart",
+      "image"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "plan_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "plan_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "plan",
+     "name": "Plan: change sets",
+     "skip": [
+      2,
+      3
+     ],
+     "note": "Change sets of the 8 prod stacks pass the guard and are deleted. The image, release and alarms steps of the job are skipped (dry run)."
+    },
+    {
+     "id": "apply_dguard",
+     "stage": "d_guard",
+     "lane": 0,
+     "after": [
+      "plan_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: guards",
+     "note": "Every guard passes; AWS is reachable with a short-lived role."
+    },
+    {
+     "id": "apply_dstacks",
+     "stage": "d_stacks",
+     "lane": 0,
+     "after": [
+      "apply_dguard"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: stacks, add-ons",
+     "skip": [
+      0,
+      1
+     ]
+    },
+    {
+     "id": "apply_dimage",
+     "stage": "d_image",
+     "lane": 0,
+     "after": [
+      "apply_dstacks"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: image"
+    },
+    {
+     "id": "apply_drelease",
+     "stage": "d_release",
+     "lane": 0,
+     "after": [
+      "apply_dimage"
+     ],
+     "via": "deploy-prod.yml > deploy.yml",
+     "run": "apply",
+     "name": "Apply: release, alarms",
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "helm --atomic rolls back."
+    }
+   ]
+  },
+  {
+   "id": "x-plan",
+   "group": "Destroy DEV",
+   "title": "Plan only (default)",
+   "desc": "See what a destroy would remove. Queues while a deploy of dev runs.",
+   "result": "Green; a full list in the summary; nothing deleted.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = plan"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [
+      1,
+      2,
+      3
+     ],
+     "note": "Only the read-only plan runs."
+    }
+   ]
+  },
+  {
+   "id": "x-plan0",
+   "group": "Destroy DEV",
+   "title": "Plan when nothing is deployed",
+   "desc": "No stack of this repository exists.",
+   "result": "Green; the summary says nothing is deployed.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = plan"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": []
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [
+      0,
+      1,
+      2,
+      3
+     ],
+     "note": "Owner is none: every task is skipped."
+    }
+   ]
+  },
+  {
+   "id": "x-ok",
+   "group": "Destroy DEV",
+   "title": "Destroy, all green",
+   "desc": "Mode destroy with the repository name typed. The NAT gateway is recreated just for the uninstall; keep-up is ignored at the end.",
+   "result": "dev is gone. Next by hand: Deploy DEV in shared-resources and API_WEIGHT_EKS = 0. The SAM artifact bucket stays.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": []
+    }
+   ]
+  },
+  {
+   "id": "x-none",
+   "group": "Destroy DEV",
+   "title": "Destroy when nothing is deployed",
+   "desc": "Mode destroy but no stack exists.",
+   "result": "Green if clean. The leftover check still runs, so it goes red if, for example, the SSM registration remains (it is not removed on this path).",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": []
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [
+      0,
+      1,
+      2
+     ],
+     "note": "Owner is none: only the leftover check runs."
+    }
+   ]
+  },
+  {
+   "id": "x-text",
+   "group": "Destroy DEV",
+   "title": "Wrong or empty confirmation text",
+   "desc": "Mode destroy without the exact repository name.",
+   "result": "Red, nothing touched.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = wrong or empty"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ],
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "The typed text is not the repository name; AWS is never reached."
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "outcome": "skipped",
+     "note": "Never reached."
+    }
+   ]
+  },
+  {
+   "id": "x-branch",
+   "group": "Destroy DEV",
+   "title": "Not from develop",
+   "desc": "Started from another branch, in either mode.",
+   "result": "Red, nothing touched.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "not develop",
+    "inputs": [
+     "mode = plan"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ],
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "Only develop may destroy dev."
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "outcome": "skipped",
+     "note": "Never reached."
+    }
+   ]
+  },
+  {
+   "id": "x-conf",
+   "group": "Destroy DEV",
+   "title": "Missing configuration",
+   "desc": "AWS_REGION or a secret is missing in the dev environment.",
+   "result": "Red before AWS.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = plan"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ],
+     "outcome": "failed",
+     "failAt": 2,
+     "note": "The missing names are printed."
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "outcome": "skipped",
+     "note": "Never reached."
+    }
+   ]
+  },
+  {
+   "id": "x-acct",
+   "group": "Destroy DEV",
+   "title": "Wrong AWS account",
+   "desc": "The role points to another account.",
+   "result": "Red, nothing touched.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = plan"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ],
+     "outcome": "failed",
+     "failAt": 5,
+     "note": "The caller account differs from AWS_ACCOUNT_ID."
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "outcome": "skipped",
+     "note": "Never reached."
+    }
+   ]
+  },
+  {
+   "id": "x-owner",
+   "group": "Destroy DEV",
+   "title": "Owner cannot be read",
+   "desc": "describe-stacks fails.",
+   "result": "Red (fails closed), nothing touched.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ],
+     "outcome": "failed",
+     "failAt": 6,
+     "note": "The guard exits 4 and no owner is written."
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "outcome": "skipped",
+     "note": "Never reached."
+    }
+   ]
+  },
+  {
+   "id": "x-unin",
+   "group": "Destroy DEV",
+   "title": "Uninstall build fails",
+   "desc": "The cluster does not answer or a Helm release cannot be removed.",
+   "result": "Red. No stack deleted; the NAT may have been recreated. Run again after fixing.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [],
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "helm_uninstall.sh fails before any stack is deleted."
+    }
+   ]
+  },
+  {
+   "id": "x-lb",
+   "group": "Destroy DEV",
+   "title": "Load balancer does not go away",
+   "desc": "The controller leaves a load balancer, target group or security group after 20 minutes.",
+   "result": "Red. No stack deleted; remove them by hand and run again.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [],
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "The wait times out: the network stack could not be deleted."
+    }
+   ]
+  },
+  {
+   "id": "x-del",
+   "group": "Destroy DEV",
+   "title": "A stack ends in DELETE_FAILED",
+   "desc": "CloudFormation cannot delete a stack, or a bucket cannot be emptied.",
+   "result": "Red. The stacks not yet reached stay; run again after fixing. The leftover check does not run.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [],
+     "outcome": "failed",
+     "failAt": 1,
+     "note": "The failed events are printed and the loop stops."
+    }
+   ]
+  },
+  {
+   "id": "x-left",
+   "group": "Destroy DEV",
+   "title": "Leftovers found",
+   "desc": "Everything was deleted, but tagged or named resources remain after 4 passes.",
+   "result": "Red; the list is in the summary. Keys and secrets pending deletion do not count.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Destroy DEV",
+    "ref": "develop",
+    "inputs": [
+     "mode = destroy",
+     "confirm = <repository name>"
+    ],
+    "entry": "destroy-dev.yml"
+   },
+   "stages": [
+    {
+     "id": "g",
+     "stage": "x_guard",
+     "lane": 0,
+     "via": "destroy-dev.yml",
+     "skip": [
+      8
+     ]
+    },
+    {
+     "id": "r",
+     "stage": "x_run",
+     "lane": 0,
+     "after": [
+      "g"
+     ],
+     "via": "destroy-dev.yml",
+     "skip": [],
+     "outcome": "failed",
+     "failAt": 3,
+     "note": "post_destroy_check.py exits 1 (or 2 when a read fails)."
+    }
+   ]
+  },
+  {
+   "id": "k-on",
+   "group": "Keep NAT",
+   "title": "Keep the NAT up",
+   "desc": "keep = true (default) before 22:00 Panama.",
+   "result": "The 22:00 shutdown keeps the NAT. Nothing resets it: run again with false; it costs money meanwhile.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = true"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "The parameter becomes true."
+    }
+   ]
+  },
+  {
+   "id": "k-off",
+   "group": "Keep NAT",
+   "title": "Back to the normal schedule",
+   "desc": "keep = false.",
+   "result": "The next 22:00 shutdown removes the NAT.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = false"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "The parameter becomes false."
+    }
+   ]
+  },
+  {
+   "id": "k-none",
+   "group": "Keep NAT",
+   "title": "dev is not deployed",
+   "desc": "The scheduler stack is not deployed, so the parameter does not exist. The workflow does not check this.",
+   "result": "Green, but put-parameter creates the parameter outside CloudFormation; the next deployment of the scheduler stack, which defines the same name, would likely fail until it is deleted by hand (deduced from the code, not run).",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = true"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "put-parameter --overwrite creates the missing parameter."
+    }
+   ]
+  },
+  {
+   "id": "k-read",
+   "group": "Keep NAT",
+   "title": "Write is refused",
+   "desc": "put-parameter fails, for example for a missing permission.",
+   "result": "Red, nothing written.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = true"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "put-parameter fails; the step stops.",
+     "outcome": "failed",
+     "failAt": 3
+    }
+   ]
+  },
+  {
+   "id": "k-conf",
+   "group": "Keep NAT",
+   "title": "Missing configuration",
+   "desc": "AWS_REGION or a secret is missing in the dev environment.",
+   "result": "Red before AWS.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = true"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "The missing names are printed.",
+     "outcome": "failed",
+     "failAt": 0
+    }
+   ]
+  },
+  {
+   "id": "k-acct",
+   "group": "Keep NAT",
+   "title": "Wrong AWS account",
+   "desc": "The role points to another account.",
+   "result": "Red, nothing written.",
+   "trigger": {
+    "type": "manual",
+    "title": "Run Keep NAT",
+    "ref": "any branch",
+    "inputs": [
+     "keep = true"
+    ],
+    "entry": "keep-nat.yml"
+   },
+   "stages": [
+    {
+     "id": "k",
+     "stage": "k_nat",
+     "lane": 0,
+     "via": "keep-nat.yml",
+     "note": "The caller account differs from AWS_ACCOUNT_ID.",
+     "outcome": "failed",
+     "failAt": 2
+    }
+   ]
+  }
+ ]
+};
+/* ENGINE: generic, do not edit. All content comes from DATA. */
+const $=s=>document.querySelector(s),E=(t,c,x)=>{const e=document.createElement(t);if(c)e.className=c;if(x!=null)e.textContent=x;return e};
+const NS='http://www.w3.org/2000/svg';
+const W=262,HEAD=106,TH=20,CG=66,X0=300,Y0=70,LG=58;
+const PAL=['#0078d4','#8764b8','#c2410c','#038387','#b4009e','#6b7a00','#4f6bed','#a4262c'];
+const FN=Object.keys(DATA.files),FC=f=>PAL[FN.indexOf(f)%PAL.length];
+const still=matchMedia('(prefers-reduced-motion: reduce)').matches;
+let view='one',sc=0,pos=0,timer=null,fit=true,sel=null,cur=null;
+const TRIG={push:'⚡ Push',pr:'⇄ Pull request',manual:'▶ Manual run',schedule:'⏰ Schedule',call:'↪ Called workflow'};
+
+function layout(s){
+  const by={};s.stages.forEach(i=>by[i.id]=i);
+  const dep=i=>i._c??(i._c=(i.after||[]).length?1+Math.max(...i.after.map(a=>dep(by[a]))):0);
+  const lanes={};
+  s.stages.forEach(i=>{dep(i);i._d=DATA.stages[i.stage];i._h=HEAD+i._d.tasks.length*TH+8;const l=i.lane||0;lanes[l]=Math.max(lanes[l]||0,i._h)});
+  let y=Y0+26;const ly={};Object.keys(lanes).sort((a,b)=>a-b).forEach(l=>{ly[l]=y;y+=lanes[l]+LG});
+  s.stages.forEach(i=>{i._x=X0+34+i._c*(W+CG);i._y=ly[i.lane||0];i._bot=ly[i.lane||0]+lanes[i.lane||0]});
+  const w=Math.max(...s.stages.map(i=>i._x))+W+34;
+  return {by,w,h:Math.max(y,430),waves:Math.max(...s.stages.map(i=>i._c))+1};
+}
+/* A frame of the animation is one tick: [wave, tick]. Tick -1 is the approval wait. */
+function frames(s,L){
+  const f=[[-1,0]];
+  for(let w=0;w<L.waves;w++){
+    const m=s.stages.filter(i=>i._c===w);
+    if(m.some(i=>i.approval&&i.outcome!=='skipped'))f.push([w,-1]);
+    const live=m.filter(i=>i.outcome!=='skipped'&&i.outcome!=='rejected');
+    const n=live.length?Math.max(...live.map(i=>i.outcome==='failed'?lastTask(i)+1:i._d.tasks.length)):1;
+    for(let t=0;t<n;t++)f.push([w,t]);
+  }
+  f.push([L.waves,0]);return f;
+}
+function lastTask(i){let l=i.failAt;i._d.tasks.forEach((t,k)=>{if(t.always&&k>l)l=k});return l}
+function taskEnd(i,k){
+  const t=i._d.tasks[k];
+  if(i.outcome==='skipped'||i.outcome==='rejected'||(i.skip||[]).includes(k))return 'skip';
+  if(i.outcome==='canceled'&&!i.skip)return 'skip';
+  if(i.outcome==='failed'){if(k===i.failAt)return 'bad';if(k>i.failAt&&!t.always)return 'skip'}
+  return 'ok';
+}
+function stateOf(i,[w,t]){
+  const end={failed:'bad',skipped:'skip',rejected:'bad',canceled:'skip'}[i.outcome]||'ok';
+  const T=i._d.tasks.map((_,k)=>taskEnd(i,k)),n=T.length;
+  if(i._c<w)return{c:end,t:T};
+  if(i._c>w)return{c:'pending',t:T.map(()=>'')};
+  if(i.outcome==='skipped')return{c:'skip',t:T};
+  if(t===-1)return i.approval?{c:'wait',t:T.map(()=>'')}:{c:'pending',t:T.map(()=>'')};
+  if(i.outcome==='rejected')return{c:'bad',t:T};
+  const lim=i.outcome==='failed'?lastTask(i)+1:n;
+  if(t>=lim)return{c:end,t:T};
+  return{c:'run',t:T.map((x,k)=>k<t?x:k===t?(x==='skip'?'skip':'run'):'')};
+}
+const LBL={pending:'Not started',ok:'✔ Succeeded',run:'◔ In progress',bad:'✖ Failed',skip:'⊖ Skipped',wait:'⏳ Pending approval'};
+const IC={ok:'✓',run:'●',bad:'✕',skip:'–','':'○'};
+function draw(s,L,fr,host,onPick){
+  const c=E('div','canvas');c.style.width=L.w+'px';c.style.height=L.h+'px';
+  const zone=(x,w,t)=>{const z=E('div','zone');z.style.cssText=`left:${x}px;top:12px;width:${w}px;height:${L.h-24}px`;z.append(E('span','',t));c.append(z)};
+  zone(12,X0-64,'Trigger');zone(X0,L.w-X0-12,'Stages');
+  const svg=document.createElementNS(NS,'svg');svg.setAttribute('width',L.w);svg.setAttribute('height',L.h);
+  /* job frames: boxes that belong to the same YAML job */
+  const jobs={};s.stages.forEach(i=>{const k=i._d.file+'|'+i._d.job+'|'+(i.run||'');(jobs[k]=jobs[k]||[]).push(i)});
+  Object.values(jobs).filter(a=>a.length>1).forEach(a=>{
+    const x=Math.min(...a.map(i=>i._x))-24,y=Math.min(...a.map(i=>i._y))-26,r=Math.max(...a.map(i=>i._x))+W+12,b=Math.max(...a.map(i=>i._y+i._h))+12;
+    const f=E('div','frame');f.style.cssText=`left:${x}px;top:${y}px;width:${r-x}px;height:${b-y}px;--fc:${FC(a[0]._d.file)}`;
+    f.append(E('span','',`One job: ${a[0]._d.file} › ${a[0]._d.job} (${a.length} boxes, same runner)`));c.append(f)});
+  c.append(svg);
+  const wire=(d,k)=>{const p=document.createElementNS(NS,'path');p.setAttribute('d',d);p.setAttribute('class','wire '+k);svg.append(p)};
+  s.stages.forEach(i=>{
+    const st=stateOf(i,fr),cls=i.outcome==='skipped'?'off':(st.c==='run'||st.c==='wait')?'run':st.c==='pending'?'':'ok';
+    const ty=i._y+58,tx=i._x;
+    if(!(i.after||[]).length){const sy=190,mx=X0+6;wire(`M${X0-70} ${sy}H${mx}V${ty}H${tx}`,cls);return}
+    i.after.forEach(a=>{const p=L.by[a],sx=p._x+W,sy=p._y+58,mx=tx-36;
+      if(i._c-p._c===1)wire(`M${sx} ${sy}H${mx}V${ty}H${tx}`,cls);
+      else{const ch=p._bot+LG/2-8;wire(`M${sx} ${sy}H${sx+18}V${ch}H${mx}V${ty}H${tx}`,cls)}})});
+  const g=E('div','trig');g.style.cssText=`left:30px;top:${Y0}px;width:${X0-100}px`;
+  const top=E('div','top');top.append(E('b','',s.trigger.title),E('div','mute',TRIG[s.trigger.type]));
+  const low=E('div','low');const kv=(k,v)=>{if(v){low.append(E('i','',k));const d=E('div');d.textContent=v;low.append(d)}};
+  low.append(E('i','','Starts in'));const ch=E('span','chip',s.trigger.entry);ch.style.setProperty('--fc',FC(s.trigger.entry));low.append(ch);
+  kv('Branch / ref',s.trigger.ref);(s.trigger.inputs||[]).forEach((v,n)=>kv(n?'':'Inputs and switches',v));
+  g.append(top,low);c.append(g);
+  s.stages.forEach(i=>{
+    const st=stateOf(i,fr),d=i._d,b=E('button','card '+st.c);b.style.cssText=`left:${i._x}px;top:${i._y}px;width:${W}px;height:${i._h}px`;
+    const nm=i.name||d.name,hd=E('span','hd');hd.style.display='block';
+    hd.append(E('span','nm',nm),E('span','stt',st.c==='bad'&&i.outcome==='rejected'?'✖ Rejected':st.c==='skip'&&i.outcome==='canceled'?'⊘ Canceled':LBL[st.c]));
+    const fc=E('span','chip',d.file);fc.style.setProperty('--fc',FC(d.file));hd.append(fc,E('span','jb','job: '+d.job+(i.via&&i.via!==d.file?'  ·  called by '+i.via:'')));
+    b.append(hd);
+    d.tasks.forEach((t,k)=>{const r=E('span','tk '+st.t[k]);r.append(E('span','ic',IC[st.t[k]]),E('span','',t.t));r.title=t.t+(t.if?' ('+t.if+')':'');b.append(r)});
+    if(i.approval){const q=E('span','gate');q.title=i.approval;q.innerHTML='<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="5" r="2.8"/><path d="M2.5 14c.4-3.4 2.6-5 5.5-5s5.1 1.6 5.5 5"/></svg>';b.append(q)}
+    b.setAttribute('aria-label',`${nm}, ${d.file}, ${LBL[st.c]}`);b.dataset.id=i.id;b.onclick=()=>onPick(i);c.append(b)});
+  const z=E('div','sizer');z.append(c);host.replaceChildren(z);
+  const av=host.clientWidth||1100,k=fit?Math.max(Math.min(1,(av-4)/L.w),view==='all'?.3:.62):1;
+  c.style.transform=`scale(${k})`;z.style.width=L.w*k+'px';z.style.height=L.h*k+'px';return k;
+}
+function caption(s,L,[w,t]){
+  if(w===-1)return[s.title,`${TRIG[s.trigger.type]}: ${s.trigger.title}. The run starts in ${s.trigger.entry}.`];
+  if(w===L.waves)return['Result',s.result];
+  const m=s.stages.filter(i=>i._c===w);
+  if(t===-1)return['Waiting for approval',m.filter(i=>i.approval).map(i=>(i.name||i._d.name)+': '+i.approval).join(' ')];
+  return[m.map(i=>(i.name||i._d.name)+' ['+i._d.file+']').join('  +  '),m.map(i=>i.note||(i.outcome==='skipped'?(i.name||i._d.name)+' is skipped.':i._d.summary)).join(' ')];
+}
+function detail(i){
+  const d=i._d,a=E('aside');a.append(E('h3','',(i.name||d.name)));
+  a.append(E('p','',d.summary+(i.note?' In this scenario: '+i.note:'')));
+  const p=E('p','mute',`File: .github/workflows/${d.file} · job: ${d.job}${d.meta?' · '+d.meta:''}${i.approval?' · approval: '+i.approval:''}`);a.append(p,tasks(d,i));return a;
+}
+function tasks(d,i){
+  const t=E('table'),h=E('tr');['Task','What it runs','YAML step(s) and line','Condition'].concat(i?['In this scenario']:[]).forEach(x=>h.append(E('th','',x)));t.append(h);
+  d.tasks.forEach((k,n)=>{const r=E('tr');r.append(E('td','',k.t),E('td','',k.do));const td=E('td');k.steps.forEach((x,j)=>{const q=E('div');q.append(E('code','',x+'  L'+k.lines[j]));td.append(q)});r.append(td,E('td','',k.if||'always in order'));
+    if(i)r.append(E('td','',{ok:'Runs',bad:'Fails',skip:'Skipped'}[taskEnd(i,n)]));t.append(r)});return t;
+}
+function legend(){const l=E('div','lg');[['✓','succeeded'],['●','in progress'],['✕','failed'],['–','skipped in this scenario'],['○','not started'],['◯ person','manual approval (GitHub environment)'],['[ - - ]','dashed frame: boxes of one YAML job']].forEach(([a,b])=>{const s=E('span');s.append(E('b','',a+' '),b);l.append(s)});return l}
+function show(reset){
+  const s=DATA.scenarios[sc],sec=$('#sec');
+  if(reset){stop();pos=0;sel=null;cur={s,L:layout(s)};cur.F=frames(s,cur.L);pos=cur.F.length-1;
+    sec.className='';sec.replaceChildren();
+    const ctl=E('div','ctl'),B=(t,f,id)=>{const b=E('button','',t);b.onclick=f;if(id)b.id=id;ctl.append(b)};
+    B('▶ Play',play,'pl');B('⏮ Start',()=>{stop();pos=0;show()});B('◀ Prev',()=>go(-1));B('Next ▶',()=>go(1));B('Next stage ⏭',()=>{stop();const w=cur.F[pos][0];while(pos<cur.F.length-1&&cur.F[pos][0]===w)pos++;show()});B('Final state',()=>{stop();pos=cur.F.length-1;show()});B('Fit / 100%',()=>{fit=!fit;show()});ctl.append(E('span','pos'));
+    const cap=E('div','cap');cap.setAttribute('aria-live','polite');
+    const v=E('div','view');v.id='v';v.tabIndex=0;v.setAttribute('aria-label','Pipeline diagram');
+    sec.append(E('h3','',s.title),E('p','desc',s.desc),ctl,cap,v,legend(),E('div','dt'),E('p','mute',`As of ${DATA.asOf}. Source: ${DATA.source}. Click a box to see its tasks, YAML steps and line numbers.`));
+  }
+  const {L,F}=cur,v=$('#v'),sl=v.scrollLeft,stp=v.scrollTop,foc=document.activeElement?.dataset?.id;
+  const k=draw(s,L,F[pos],v,i=>{sel=i;$('.dt').replaceChildren(detail(i))});v.scrollLeft=sl;v.scrollTop=stp;
+  if(foc)v.querySelector(`[data-id="${foc}"]`)?.focus({preventScroll:true});
+  const [a,b]=caption(s,L,F[pos]);$('.cap').replaceChildren(E('b','',a),E('span','',b));
+  $('.pos').textContent=`Step ${pos+1} of ${F.length}`;
+  const act=s.stages.filter(i=>i._c===F[pos][0]);
+  if(act.length&&!reset){const x=act[0]._x*k;if(x<v.scrollLeft+20||x+W*k>v.scrollLeft+v.clientWidth-20)v.scrollLeft=Math.max(0,x-v.clientWidth/3);const y=act[0]._y*k;if(act.length===1&&(y<v.scrollTop||y+120>v.scrollTop+v.clientHeight))v.scrollTop=Math.max(0,y-60)}
+  $('#pl').textContent=timer?'⏸ Pause':'▶ Play';
+  history.replaceState(null,'',`#scene=${sc+1}&step=${pos+1}`);
+}
+function go(n){stop();pos=Math.max(0,Math.min(cur.F.length-1,pos+n));show()}
+function stop(){clearTimeout(timer);timer=null}
+function play(){if(timer){stop();show();return}if(pos>=cur.F.length-1)pos=0;
+  const tick=()=>{if(pos>=cur.F.length-1){stop();show();return}pos++;timer=setTimeout(tick,cur.F[pos][1]===-1?2600:still?1800:cur.F[pos][1]===0?1900:850);show()};
+  timer=setTimeout(tick,1300);show()}
+function showAll(){stop();const sec=$('#sec');sec.className='all';sec.replaceChildren(E('h3','','All scenarios, final state'),legend());
+  DATA.scenarios.forEach((s,n)=>{const d=E('div','allitem');d.append(E('h3','',(n+1)+'. '+s.title),E('p','desc',s.desc));const v=E('div','view');d.append(v,E('p','desc','Result: '+s.result));sec.append(d);const L=layout(s);draw(s,L,[L.waves,0],v,()=>{view='one';sc=n;render()})})}
+function showFiles(){stop();const sec=$('#sec');sec.className='';sec.replaceChildren(E('h3','','YAML guide: every workflow file, job and task'));
+  FN.forEach(f=>{const x=DATA.files[f],d=E('details');d.open=true;const s=E('summary'),c=E('span','chip',f);c.style.setProperty('--fc',FC(f));s.append(c,' '+x.role);d.append(s,E('p','mute','Starts on: '+x.triggers.join('; ')+(x.calls&&x.calls.length?'. Calls: '+x.calls.join(', '):'')));
+    Object.values(DATA.stages).filter(g=>g.file===f).forEach(g=>{const h=E('p');h.append(E('b','',g.name),E('span','mute',`  job: ${g.job}${g.meta?' · '+g.meta:''}`));d.append(h,E('p','',g.summary),tasks(g))});
+    const u=DATA.scenarios.filter(q=>q.trigger.entry===f||q.stages.some(i=>DATA.stages[i.stage].file===f)).map(q=>q.title);d.append(E('p','mute','Seen in: '+u.join(' | ')));sec.append(d)})}
+function render(){
+  $('#views').replaceChildren();[['one','Pipeline'],['all','All scenarios'],['files','YAML guide']].forEach(([k,t])=>{const b=E('button','',t);b.setAttribute('role','tab');b.setAttribute('aria-selected',view===k);b.onclick=()=>{view=k;render()};$('#views').append(b)});
+  const th=E('button','','Theme');th.onclick=()=>{const r=document.documentElement,d=r.dataset.theme||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');r.dataset.theme=d==='dark'?'light':'dark'};$('#views').append(E('span','sp'),th);
+  const nav=$('#nav');nav.replaceChildren();let g='';DATA.scenarios.forEach((s,n)=>{if(s.group!==g){g=s.group;nav.append(E('h2','',g))}const b=E('button','',(n+1)+'. '+s.title);b.setAttribute('aria-current',view==='one'&&n===sc);b.onclick=()=>{view='one';sc=n;render()};nav.append(b)});
+  view==='one'?show(true):view==='all'?showAll():showFiles();
+}
+document.addEventListener('keydown',e=>{if(view!=='one'||e.ctrlKey||e.metaKey||e.altKey||/^(BUTTON|SUMMARY)$/.test(e.target.tagName)&&e.key===' ')return;
+  if(e.key==='ArrowRight'){go(1);e.preventDefault()}else if(e.key==='ArrowLeft'){go(-1);e.preventDefault()}else if(e.key===' '){play();e.preventDefault()}});
+addEventListener('resize',()=>{if(view==='one')show();else if(view==='all')showAll()});
+$('#h').textContent=DATA.title;$('#sub').textContent=DATA.subtitle;
+const q=new URLSearchParams(location.hash.slice(1));
+if(q.get('theme'))document.documentElement.dataset.theme=q.get('theme');
+if(q.get('view'))view=q.get('view');sc=Math.max(0,Math.min(DATA.scenarios.length-1,(+q.get('scene')||1)-1));const st0=+q.get('step');render();
+if(view==='one'&&st0){pos=Math.max(0,Math.min(cur.F.length-1,st0-1));show()}
+</script>
+</body>
+</html>

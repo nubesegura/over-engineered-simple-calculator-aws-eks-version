@@ -2,8 +2,8 @@
 # Deploys the calculator release. Run by the deployment build project (DEPLOY_COMMAND=deploy) from the verified
 # source archive, with the kubeconfig of the cluster already written by the buildspec. Steps:
 #   1. check the inputs and resolve everything else from the deployed stacks (read-only calls);
-#   2. apply the namespace, the service accounts and the migration Job, wait for the Job: a failed migration stops
-#      the deployment before the release is touched (requirement 11.4);
+#   2. apply the namespace, the service accounts, the migration network policy and the migration Job, wait for the
+#      Job: a failed migration stops the deployment before the release is touched (requirement 11.4);
 #   3. helm upgrade --install --atomic --wait: a failed rollout rolls back to the previous release and the script
 #      exits non-zero with the cause (requirement 9.5);
 #   4. wait for the rollout of every deployment, wait for the load balancer address, publish its DNS name and

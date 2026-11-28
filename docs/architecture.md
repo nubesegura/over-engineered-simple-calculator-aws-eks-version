@@ -6,6 +6,7 @@
 > Diagrams (regenerated from the implemented IaC at closing; the pictures are exported with File > Export as > PNG, 2x):
 > - AWS components: [architecture.drawio](architecture.drawio), [architecture.png](architecture.png)
 > - Layers (edge, compute, data, operations): [layers.drawio](layers.drawio), [layers.png](layers.png)
+> - GitHub Actions pipelines (open in a browser; works offline): [workflows-flow-animation.html](workflows-flow-animation.html)
 >
 > Related documents: [functional.md](functional.md) (what the product does), [technical.md](technical.md) (configuration, deployment, runbooks), [adr/](adr/README.md) (decisions).
 
